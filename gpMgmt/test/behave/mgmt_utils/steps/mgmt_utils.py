@@ -897,6 +897,35 @@ def impl(context, command, called_command, num, args):
                         % (called_command, args, num, len(matches), context.stdout_message))
 
 
+@then('check if gprecoverseg ran gpsegrecovery.py {num} times with the expected args')
+def impl(context, num):
+    gprecoverseg_output = context.stdout_message
+
+    era_cmd = "grep 'era =' {}/log/gp_era | sed 's/^.* // | tr -d '\n'".format(coordinator_data_dir)
+    run_command(context, era_cmd)
+    era = context.stdout_message
+
+    expected_command = "Running Command: $GPHOME/sbin/gpsegrecovery.py"
+    expected_args = "-l {} -v -b 64 --force-overwrite --era={}".format(_get_gpAdminLogs_directory(), era)
+    matches = lines_matching_both(gprecoverseg_output, expected_command, expected_args)
+
+    if len(matches) != int(num):
+        raise Exception("Expected gpsegrecovery.py to occur with %s args %s times. Found %d. \n %s"
+                        % (expected_args, num, len(matches), gprecoverseg_output))
+
+@then('check if gprecoverseg ran gpsegsetuprecovery.py {num} times with the expected args')
+def impl(context, num):
+    gprecoverseg_output = context.stdout_message
+
+    expected_command = "Running Command: $GPHOME/sbin/gpsegsetuprecovery.py"
+    expected_args = "-l {} -v -b 64 --force-overwrite".format(_get_gpAdminLogs_directory())
+    matches = lines_matching_both(gprecoverseg_output, expected_command, expected_args)
+
+    if len(matches) != int(num):
+        raise Exception("Expected gpsegrecovery.py to occur with %s args %s times. Found %d. \n %s"
+                        % (expected_args, num, len(matches), gprecoverseg_output))
+
+
 @then('{command} should only spawn up to {num} workers in WorkerPool')
 def impl(context, command, num):
     workerPool_out = "WorkerPool() initialized with"
