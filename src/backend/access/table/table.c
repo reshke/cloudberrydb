@@ -184,10 +184,10 @@ table_close(Relation relation, LOCKMODE lockmode)
  *
  * Note1: Postgres will always hold RowExclusiveLock for DMLs
  * Note2: INSERT statement will not call this function.
- * Note3: This function may return NULL (eg. when just before we open the table,
+ * Note3: This function may return NULL (e.g. when just before we open the table,
  *        other transaction drop the table), caller should check it.
  *
- * Cloudberry only upgrade lock level for UPDATE and DELETE statement under some
+ * Greenplum only upgrade lock level for UPDATE and DELETE statement under some
  * condition:
  *   1. always upgrade when gp_enable_global_deadlock_detector is not set
  *   2. when gp_enable_global_deadlock_detector is set:
