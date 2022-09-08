@@ -20,7 +20,8 @@
 #include "cdb/cdbappendonlystoragelayer.h"
 #include "cdb/cdbbufferedread.h"
 #include "utils/palloc.h"
-#include "storage/fd.h"
+// #include "storage/fd.h"
+#include "storage/smgr.h"
 
 
 /*
@@ -123,10 +124,13 @@ typedef struct AppendOnlyStorageRead
 	 */
 	int32		largeReadLen;
 
+
 	/*
 	 * Name of the relation to use in system logging and error messages.
 	 */
 	char	   *relationName;
+	Oid        relationOid;
+	Oid		   relnamespaceOid;
 
 	/*
 	 * A phrase that better describes the purpose of the this open.
@@ -149,6 +153,7 @@ typedef struct AppendOnlyStorageRead
 	 * The handle to the current open segment file.
 	 */
 	File		file;
+	const struct f_smgr_ao * smgr;
 
 	/*
 	 * The byte length of the current segment file being read.
@@ -194,8 +199,10 @@ typedef struct AppendOnlyStorageRead
 } AppendOnlyStorageRead;
 
 extern void AppendOnlyStorageRead_Init(AppendOnlyStorageRead *storageRead,
+						   Oid reloid,
 						   MemoryContext memoryContext,
 						   int32 maxBufferLen,
+						   char * relationNamespace,
 						   char *relationName, char *title,
 						   AppendOnlyStorageAttributes *storageAttributes,
 						   RelFileNode *relFileNode);

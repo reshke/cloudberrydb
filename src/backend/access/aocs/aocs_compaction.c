@@ -71,6 +71,10 @@ AOCSCompaction_DropSegmentFile(Relation aorel, int segno)
 		char		filenamepath[MAXPGPATH];
 		int			pseudoSegNo;
 		File		fd;
+		char * relname;
+
+		/* Filenum for the col */
+		FileNumber  filenum = GetFilenumForAttribute(RelationGetRelid(aorel), col + 1);
 
 		/* Open and truncate the relation segfile */
 		MakeAOSegmentFileName(aorel, segno, col, &pseudoSegNo, filenamepath);
@@ -80,11 +84,16 @@ AOCSCompaction_DropSegmentFile(Relation aorel, int segno)
 			   "segno %d",
 			   pseudoSegNo);
 
-		fd = OpenAOSegmentFile(aorel, filenamepath, 0);
+		relname = RelationGetRelationName(aorel);
+
+		RelationOpenSmgr(aorel);
+
+		fd = OpenAOSegmentFile(aorel, filenamepath, 0, -1);
+		pfree(nspname);
 		if (fd >= 0)
 		{
-			TruncateAOSegmentFile(fd, aorel, pseudoSegNo, 0);
-			CloseAOSegmentFile(fd);
+			TruncateAOSegmentFile(fd, aorel, pseudoSegNo, 0, vacrelstats);
+			CloseAOSegmentFile(aorel, fd);
 		}
 		else
 		{
@@ -94,6 +103,7 @@ AOCSCompaction_DropSegmentFile(Relation aorel, int segno)
 			 */
 			elog(DEBUG1, "could not truncate segfile %s, because it does not exist", filenamepath);
 		}
+		RelationCloseSmgr(aorel);
 	}
 }
 
@@ -126,6 +136,9 @@ AOCSSegmentFileTruncateToEOF(Relation aorel, int segno, AOCSVPInfo *vpinfo)
 		File		fd;
 		int32		fileSegNo;
 
+		/* Filenum for the column */
+		FileNumber  filenum = GetFilenumForAttribute(RelationGetRelid(aorel), j + 1);
+ 
 		entry = &vpinfo->entry[j];
 		segeof = entry->eof;
 
@@ -143,15 +156,19 @@ AOCSSegmentFileTruncateToEOF(Relation aorel, int segno, AOCSVPInfo *vpinfo)
 			   fileSegNo,
 			   segeof);
 
-		fd = OpenAOSegmentFile(aorel, filenamepath, segeof);
+		relname = RelationGetRelationName(aorel);
+
+		RelationOpenSmgr(aorel);
+
+		fd = OpenAOSegmentFile(aorel, filenamepath, segeof, -1);
 		if (fd >= 0)
 		{
-			TruncateAOSegmentFile(fd, aorel, fileSegNo, segeof);
-			CloseAOSegmentFile(fd);
+			TruncateAOSegmentFile(fd, aorel, fileSegNo, segeof, vacrelstats);
+			CloseAOSegmentFile(aorel, fd);
 
 			elogif(Debug_appendonly_print_compaction, LOG,
-				   "Successfully truncated AO COL relation \"%s.%s\", relation id %u, relfilenode %lu column #%d, logical segment #%d (physical segment file #%d, logical EOF " INT64_FORMAT ")",
-				   get_namespace_name(RelationGetNamespace(aorel)),
+				   "Successfully truncated AO COL relation \"%s.%s\", relation id %u, relfilenode %u column #%d, logical segment #%d (physical segment file #%d, logical EOF " INT64_FORMAT ")",
+				   nspname,
 				   relname,
 				   aorel->rd_id,
 				   aorel->rd_node.relNode,
@@ -173,6 +190,8 @@ AOCSSegmentFileTruncateToEOF(Relation aorel, int segno, AOCSVPInfo *vpinfo)
 				   fileSegNo,
 				   segeof);
 		}
+		RelationCloseSmgr(aorel);
+		pfree(nspname);
 	}
 }
 

@@ -396,6 +396,13 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 		elog(WARNING, "tablespaces created by regression test cases should have names starting with \"regress_\"");
 #endif
 
+	// if (!allowSystemTableMods && stmt->tablespacename != "yezzey")
+	// 	ereport(ERROR,
+	// 			(errcode(ERRCODE_RESERVED_NAME),
+	// 			 errmsg("unacceptable tablespace name \"%s\"",
+	// 					stmt->tablespacename),
+	// 	errdetail("In yezzey-engined installation tablespace support are dropped.")));
+
 	/*
 	 * Check that there is no other tablespace by this name.  (The unique
 	 * index would catch this anyway, but might as well give a friendlier

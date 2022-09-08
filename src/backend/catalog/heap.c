@@ -1075,7 +1075,6 @@ void MetaTrackDropObject(Oid		classid,
 
 	systable_endscan(desc);
 	table_close(rel, RowExclusiveLock);
-
 } /* end MetaTrackDropObject */
 
 /*

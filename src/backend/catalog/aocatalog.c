@@ -26,6 +26,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_appendonly.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/pg_tablespace.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"

@@ -100,6 +100,29 @@ static const f_smgr smgrsw[] = {
 	}
 };
 
+File AORelOpenSegFile(
+	Oid reloid, 
+	const char *nspname,
+	const char *relname,
+	const char *fileName,
+	int fileFlags, 
+	int64 modcount) {
+	return PathNameOpenFile(fileName, fileFlags);
+}
+
+static const f_smgr_ao smgrswao[] = {
+	/* regular file */
+	{
+		.smgr_FileClose = FileClose,
+		.smgr_FileTruncate = FileTruncate,
+		.smgr_AORelOpenSegFile = AORelOpenSegFile,
+		.smgr_FileWrite = FileWrite,
+		.smgr_FileRead = FileRead,
+		.smgr_FileSync = FileSync,
+		.smgr_FileDiskSize = FileDiskSize,
+	},
+};
+
 static const int NSmgr = lengthof(smgrsw);
 
 /*
@@ -155,6 +178,28 @@ smgrshutdown(int code, Datum arg)
 	}
 }
 
+const f_smgr_ao *
+smgrao_standard()
+{
+	// for md.c 
+	return &smgrswao[0];
+}
+
+const f_smgr_ao *
+smgrao(void)
+{
+	const f_smgr_ao *result;
+
+	if (smgrao_hook)
+ 	{
+		result = (*smgrao_hook)();
+ 	}
+	else
+		result = smgrao_standard();
+
+	return result;
+}
+
 /*
  *	smgropen() -- Return an SMgrRelation object, creating it if need be.
  *
@@ -198,7 +243,13 @@ smgropen(RelFileNode rnode, BackendId backend, SMgrImpl which, Relation rel)
 		reln->smgr_targblock = InvalidBlockNumber;
 		for (int i = 0; i <= MAX_FORKNUM; ++i)
 			reln->smgr_cached_nblocks[i] = InvalidBlockNumber;
-		reln->smgr_which = which; /* GPDB add SMGR_AO*/
+		reln->smgr_which = which;
+		reln->storageManager = smgr(backend, rnode, which);
+		reln->storageManagerAO = smgrao();
+
+		/* mark it not open */
+		for (forknum = 0; forknum <= MAX_FORKNUM; forknum++)
+			reln->md_num_open_segs[forknum] = 0;
 
 		/* it has no owner yet */
 		dlist_push_tail(&unowned_relns, &reln->node);
