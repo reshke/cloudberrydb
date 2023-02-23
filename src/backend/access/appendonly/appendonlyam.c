@@ -3049,7 +3049,7 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 	 */
 	if (aoInsertDesc->numSequences == 0)
 	{
-		int64 firstSequence = GetFastSequences(aoInsertDesc->segrelid,
+		int64 firstSequence PG_USED_FOR_ASSERTS_ONLY = GetFastSequences(aoInsertDesc->segrelid,
 											   aoInsertDesc->cur_segno,
 											   aoInsertDesc->lastSequence + 1,
 											   NUM_FAST_SEQUENCES);
