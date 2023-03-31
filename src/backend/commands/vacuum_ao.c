@@ -157,7 +157,7 @@ static bool appendonly_tid_reaped(ItemPointer itemptr, void *state);
 
 static void vacuum_appendonly_fill_stats(Relation aorel, Snapshot snapshot, int elevel,
 										 BlockNumber *rel_pages, double *rel_tuples,
-										 bool *relhasindex, BlockNumber *total_file_segs);
+										 double *dead_tuples, bool *relhasindex, BlockNumber *total_file_segs);
 static int vacuum_appendonly_indexes(Relation aoRelation, int options, Bitmapset *dead_segs,
 									 BufferAccessStrategy bstrategy, AOVacuumRelStats *vacrelstats);
 static void ao_vacuum_rel_recycle_dead_segments(Relation onerel, VacuumParams *params,
@@ -236,6 +236,7 @@ ao_vacuum_rel_post_cleanup(Relation onerel, VacuumParams *params, BufferAccessSt
 {
 	BlockNumber	relpages;
 	double		reltuples;
+	double		deadtuples;
 	bool		relhasindex;
 	/* AO/AOCO total file segment number, use type BlockNumber to
 	 * represent same type with num_all_visible_pages in libpq.
@@ -282,6 +283,7 @@ ao_vacuum_rel_post_cleanup(Relation onerel, VacuumParams *params, BufferAccessSt
 								 elevel,
 								 &relpages,
 								 &reltuples,
+								 &deadtuples,
 								 &relhasindex,
 								 &total_file_segs);
 
@@ -305,6 +307,12 @@ ao_vacuum_rel_post_cleanup(Relation onerel, VacuumParams *params, BufferAccessSt
 						MultiXactCutoff,
 						false,
 						true /* isvacuum */);
+
+	/* report results to the stats collector, too */
+	pgstat_report_vacuum(RelationGetRelid(onerel),
+						 onerel->rd_rel->relisshared,
+						 reltuples,
+						 deadtuples);
 
 	SIMPLE_FAULT_INJECTOR("vacuum_ao_post_cleanup_end");
 }
@@ -684,7 +692,7 @@ appendonly_tid_reaped(ItemPointer itemptr, void *state)
 static void
 vacuum_appendonly_fill_stats(Relation aorel, Snapshot snapshot, int elevel,
 							 BlockNumber *rel_pages, double *rel_tuples,
-							 bool *relhasindex, BlockNumber *total_file_segs)
+							 double *dead_tuples, bool *relhasindex, BlockNumber *total_file_segs)
 {
 	FileSegTotals *fstotal;
 	BlockNumber nblocks;
@@ -737,6 +745,7 @@ vacuum_appendonly_fill_stats(Relation aorel, Snapshot snapshot, int elevel,
 
 	*rel_pages = nblocks;
 	*rel_tuples = num_tuples;
+	*dead_tuples = hidden_tupcount;
 	*relhasindex = aorel->rd_rel->relhasindex;
 	*total_file_segs = fstotal->totalfilesegs;
 
