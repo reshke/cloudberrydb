@@ -165,6 +165,7 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 	if (!scan->initedStorageRoutines)
 	{
 		PGFunction *fns = NULL;
+		RelationOpenSmgr(reln);
 
 		AppendOnlyStorageRead_Init(
 								   &scan->storageRead,
@@ -173,7 +174,7 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 								   NameStr(scan->aos_rd->rd_rel->relname),
 								   scan->title,
 								   &scan->storageAttributes,
-								   &scan->aos_rd->rd_node);
+								   &scan->aos_rd->rd_node, reln->rd_smgr->smgr_ao);
 
 		/*
 		 * There is no guarantee that the current memory context will be
@@ -286,6 +287,7 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 	Assert(strlen(scan->aos_filenamepath) + 1 <= scan->aos_filenamepath_maxlen);
 
 	Assert(scan->initedStorageRoutines);
+
 
 	AppendOnlyStorageRead_OpenFile(
 								   &scan->storageRead,
@@ -1571,7 +1573,7 @@ appendonly_beginrangescan_internal(Relation relation,
 		Oid			visimaprelid;
 		Oid			visimapidxid;
 
-		GetAppendOnlyEntryAuxOids(relation->rd_id, NULL,
+		GetAppendOnlyEntryAuxOids(relation,
 								  NULL, NULL, NULL, &visimaprelid, &visimapidxid);
 
 		AppendOnlyVisimap_Init(&scan->visibilityMap,
@@ -2139,7 +2141,7 @@ appendonly_fetch_init(Relation relation,
 	FormData_pg_appendonly			aoFormData;
 	int								segno;
 
-	GetAppendOnlyEntry(relation->rd_id, &aoFormData);
+	GetAppendOnlyEntry(relation, &aoFormData);
 
 	/*
 	 * increment relation ref count while scanning relation
@@ -2219,6 +2221,8 @@ appendonly_fetch_init(Relation relation,
 		aoFetchDesc->lastSequence[segno] = ReadLastSequence(aoFormData.segrelid, segno);
 	}
 
+	RelationOpenSmgr(relation);
+
 	AppendOnlyStorageRead_Init(
 							   &aoFetchDesc->storageRead,
 							   aoFetchDesc->initContext,
@@ -2226,7 +2230,7 @@ appendonly_fetch_init(Relation relation,
 							   NameStr(aoFetchDesc->relation->rd_rel->relname),
 							   aoFetchDesc->title,
 							   &aoFetchDesc->storageAttributes,
-							   &relation->rd_node);
+							   &relation->rd_node, relation->rd_smgr->smgr_ao);
 
 
 	fns = get_funcs_for_compression(NameStr(aoFormData.compresstype));
@@ -2543,7 +2547,7 @@ appendonly_delete_init(Relation rel)
 	Oid visimaprelid;
 	Oid visimapidxid;
 
-	GetAppendOnlyEntryAuxOids(rel->rd_id, NULL, NULL, NULL, NULL, &visimaprelid, &visimapidxid);
+	GetAppendOnlyEntryAuxOids(rel, NULL, NULL, NULL, &visimaprelid, &visimapidxid);
 
 	AppendOnlyDeleteDesc aoDeleteDesc = palloc0(sizeof(AppendOnlyDeleteDescData));
 
@@ -2634,7 +2638,6 @@ appendonly_insert_init(Relation rel, int segno)
 	AppendOnlyStorageAttributes *attr;
 
 	StringInfoData titleBuf;
-	Oid segrelid;
 	int32 blocksize;
 	int32 safefswritesize;
 	int16 compresslevel;
@@ -2758,6 +2761,8 @@ appendonly_insert_init(Relation rel, int segno)
 					 RelationGetRelationName(aoInsertDesc->aoi_rel));
 	aoInsertDesc->title = titleBuf.data;
 
+	RelationOpenSmgr(rel);
+
 	AppendOnlyStorageWrite_Init(
 								&aoInsertDesc->storageWrite,
 								NULL,
@@ -2765,7 +2770,7 @@ appendonly_insert_init(Relation rel, int segno)
 								RelationGetRelationName(aoInsertDesc->aoi_rel),
 								aoInsertDesc->title,
 								&aoInsertDesc->storageAttributes,
-								XLogIsNeeded() && RelationNeedsWAL(aoInsertDesc->aoi_rel));
+								XLogIsNeeded() && RelationNeedsWAL(aoInsertDesc->aoi_rel), rel->rd_smgr->smgr_ao);
 
 	aoInsertDesc->storageWrite.compression_functions = fns;
 	aoInsertDesc->storageWrite.compressionState = cs;
@@ -2818,14 +2823,11 @@ appendonly_insert_init(Relation rel, int segno)
 	 */
 	Assert(aoInsertDesc->fsInfo->segno == segno);
 
-	GetAppendOnlyEntryAuxOids(aoInsertDesc->aoi_rel->rd_id, NULL, &segrelid,
+	GetAppendOnlyEntryAuxOids(aoInsertDesc->aoi_rel, &aoInsertDesc->segrelid,
 			NULL, NULL, NULL, NULL);
 
-	firstSequence =
-		GetFastSequences(segrelid,
-						 segno,
-						 aoInsertDesc->rowCount + 1,
-						 NUM_FAST_SEQUENCES);
+	firstSequence = GetFastSequences(aoInsertDesc->segrelid, segno, 
+						 aoInsertDesc->rowCount + 1, NUM_FAST_SEQUENCES);
 	aoInsertDesc->numSequences = NUM_FAST_SEQUENCES;
 
 	/* Set last_sequence value */
@@ -3053,17 +3055,10 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 	 */
 	if (aoInsertDesc->numSequences == 0)
 	{
-		int64		firstSequence;
-		Oid segrelid;
-
-		GetAppendOnlyEntryAuxOids(aoInsertDesc->aoi_rel->rd_id, NULL,
-				&segrelid, NULL, NULL, NULL, NULL);
-
-		firstSequence =
-			GetFastSequences(segrelid,
-							 aoInsertDesc->cur_segno,
-							 aoInsertDesc->lastSequence + 1,
-							 NUM_FAST_SEQUENCES);
+		int64 firstSequence = GetFastSequences(aoInsertDesc->segrelid,
+											   aoInsertDesc->cur_segno,
+											   aoInsertDesc->lastSequence + 1,
+											   NUM_FAST_SEQUENCES);
 
 		/* fast sequence could be inconsecutive when insert multiple segfiles */
 		AssertImply(gp_appendonly_insert_files <= 1, firstSequence == aoInsertDesc->lastSequence + 1);

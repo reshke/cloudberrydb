@@ -75,7 +75,9 @@ aocs_delete_hook_type aocs_delete_hook = NULL;
  */
 static void
 open_datumstreamread_segfile(
-							 char *basepath, RelFileNode node,
+							 char *basepath, 
+							 const struct f_smgr_ao *smgrAO,
+							 RelFileNode node,
 							 AOCSFileSegInfo *segInfo,
 							 DatumStreamRead *ds,
 							 int colNo)
@@ -104,22 +106,24 @@ open_datumstreamread_segfile(
  * the block directory.
  */
 static void
-open_all_datumstreamread_segfiles(Relation rel,
-								  AOCSFileSegInfo *segInfo,
-								  DatumStreamRead **ds,
-								  AttrNumber *proj_atts,
-								  AttrNumber num_proj_atts,
-								  AppendOnlyBlockDirectory *blockDirectory)
+open_all_datumstreamread_segfiles(AOCSScanDesc scan, AOCSFileSegInfo *segInfo)
 {
-	char	   *basepath = relpathbackend(rel->rd_node, rel->rd_backend, MAIN_FORKNUM);
+	Relation 		rel = scan->rs_base.rs_rd;
+	DatumStreamRead **ds = scan->columnScanInfo.ds;
+	AttrNumber 		*proj_atts = scan->columnScanInfo.proj_atts;
+	AttrNumber 		num_proj_atts = scan->columnScanInfo.num_proj_atts;
+	AppendOnlyBlockDirectory *blockDirectory = scan->blockDirectory;
+	char *basepath = relpathbackend(rel->rd_node, rel->rd_backend, MAIN_FORKNUM);
 
 	Assert(proj_atts);
 	for (AttrNumber i = 0; i < num_proj_atts; i++)
 	{
 		AttrNumber	attno = proj_atts[i];
 
-		open_datumstreamread_segfile(basepath, rel->rd_node, segInfo, ds[attno], attno);
+		open_datumstreamread_segfile(basepath, rel->rd_smgr->smgr_ao, rel->rd_node, segInfo, ds[attno], attno);
 		datumstreamread_block(ds[attno], blockDirectory, attno);
+		
+		AOCSScanDesc_UpdateTotalBytesRead(scan, attno);
 	}
 
 	pfree(basepath);
@@ -132,15 +136,17 @@ open_all_datumstreamread_segfiles(Relation rel,
 static void
 open_ds_write(Relation rel, DatumStreamWrite **ds, TupleDesc relationTupleDesc, bool checksum)
 {
-	int			nvp = relationTupleDesc->natts;
+	int			natts = RelationGetNumberOfAttributes(rel);
 	StdRdOptions **opts = RelationGetAttributeOptions(rel);
 	RelFileNodeBackend rnode;
 
 	rnode.node = rel->rd_node;
 	rnode.backend = rel->rd_backend;
 
+	RelationOpenSmgr(rel);
+
 	/* open datum streams.  It will open segment file underneath */
-	for (int i = 0; i < nvp; ++i)
+	for (int i = 0; i < natts; ++i)
 	{
 		Form_pg_attribute attr = TupleDescAttr(relationTupleDesc, i);
 		char	   *ct;
@@ -179,7 +185,8 @@ open_ds_write(Relation rel, DatumStreamWrite **ds, TupleDesc relationTupleDesc, 
 										RelationGetRelationName(rel),
 										/* title */ titleBuf.data,
 										XLogIsNeeded() && RelationNeedsWAL(rel),
-										&rnode);
+										&rnode,
+										rel->rd_smgr->smgr_ao);
 
 	}
 }
@@ -229,6 +236,8 @@ open_ds_read(Relation rel, DatumStreamRead **ds, TupleDesc relationTupleDesc,
 	for (AttrNumber attno = 0; attno < relationTupleDesc->natts; attno++)
 		ds[attno] = NULL;
 
+	RelationOpenSmgr(rel);
+
 	/* And then initialize the data streams for those columns we need */
 	for (AttrNumber i = 0; i < num_proj_atts; i++)
 	{
@@ -270,7 +279,8 @@ open_ds_read(Relation rel, DatumStreamRead **ds, TupleDesc relationTupleDesc,
 										   attr,
 										   RelationGetRelationName(rel),
 										    /* title */ titleBuf.data,
-										   &rel->rd_node);
+										   &rel->rd_node,
+										   rel->rd_smgr->smgr_ao);
 	}
 }
 
@@ -338,6 +348,8 @@ initscan_with_colinfo(AOCSScanDesc scan)
 	scan->cur_seg_row = 0;
 
 	ItemPointerSet(&scan->cdb_fake_ctid, 0, 0);
+
+	scan->totalBytesRead = 0;
 
 	pgstat_count_heap_scan(scan->rs_base.rs_rd);
 }
@@ -420,12 +432,7 @@ open_next_scan_seg(AOCSScanDesc scan)
 															true);
 				}
 
-				open_all_datumstreamread_segfiles(scan->rs_base.rs_rd,
-												  curSegInfo,
-												  scan->columnScanInfo.ds,
-												  scan->columnScanInfo.proj_atts,
-												  scan->columnScanInfo.num_proj_atts,
-												  scan->blockDirectory);
+				open_all_datumstreamread_segfiles(scan, curSegInfo);
 
 				return scan->cur_seg;
 			}
@@ -592,8 +599,7 @@ aocs_beginscan_internal(Relation relation,
 								 &scan->checksum,
 								 NULL);
 
-	GetAppendOnlyEntryAuxOids(RelationGetRelid(relation),
-							  scan->appendOnlyMetaDataSnapshot,
+	GetAppendOnlyEntryAuxOids(relation,
 							  NULL, NULL, NULL,
 							  &visimaprelid, &visimapidxid);
 
@@ -829,6 +835,8 @@ ReadNext:
 					goto ReadNext;
 				}
 
+				AOCSScanDesc_UpdateTotalBytesRead(scan, attno);
+
 				err = datumstreamread_advance(scan->columnScanInfo.ds[attno]);
 				Assert(err > 0);
 			}
@@ -1008,8 +1016,7 @@ aocs_insert_init(Relation rel, int segno)
                                  &nd);
     desc->compType = NameStr(nd);
 
-    GetAppendOnlyEntryAuxOids(rel->rd_id,
-                              desc->appendOnlyMetaDataSnapshot,
+    GetAppendOnlyEntryAuxOids(rel,
                               &desc->segrelid, &desc->blkdirrelid, NULL,
                               &desc->visimaprelid, &desc->visimapidxid);
 
@@ -1410,7 +1417,7 @@ openFetchSegmentFile(AOCSFetchDesc aocsFetchDesc,
 	if (logicalEof == 0)
 		return false;
 
-	open_datumstreamread_segfile(aocsFetchDesc->basepath, aocsFetchDesc->relation->rd_node,
+	open_datumstreamread_segfile(aocsFetchDesc->basepath, aocsFetchDesc->relation->rd_smgr->smgr_ao, aocsFetchDesc->relation->rd_node,
 								 fsInfo,
 								 datumStreamFetchDesc->datumStream,
 								 colNo);
@@ -1481,8 +1488,7 @@ aocs_fetch_init(Relation relation,
     bool checksum;
     Oid visimaprelid;
     Oid visimapidxid;
-    GetAppendOnlyEntryAuxOids(relation->rd_id,
-                              appendOnlyMetaDataSnapshot,
+    GetAppendOnlyEntryAuxOids(relation,
                               &aocsFetchDesc->segrelid, NULL, NULL,
                               &visimaprelid, &visimapidxid);
 
@@ -1524,6 +1530,8 @@ aocs_fetch_init(Relation relation,
 
 	aocsFetchDesc->datumStreamFetchDesc = (DatumStreamFetchDesc *)
 		palloc0(relation->rd_att->natts * sizeof(DatumStreamFetchDesc));
+
+	RelationOpenSmgr(relation);
 
 	for (colno = 0; colno < relation->rd_att->natts; colno++)
 	{
@@ -1568,7 +1576,7 @@ aocs_fetch_init(Relation relation,
 									   TupleDescAttr(tupleDesc, colno),
 									   relation->rd_rel->relname.data,
 									    /* title */ titleBuf.data,
-									   &relation->rd_node);
+									   &relation->rd_node, relation->rd_smgr->smgr_ao);
 
 		}
 		if (opts[colno])
@@ -1854,8 +1862,7 @@ aocs_delete_init(Relation rel)
 
     Snapshot snapshot = GetCatalogSnapshot(InvalidOid);
 
-    GetAppendOnlyEntryAuxOids(rel->rd_id,
-                              snapshot,
+    GetAppendOnlyEntryAuxOids(rel,
                               NULL, NULL, NULL,
                               &visimaprelid, &visimapidxid);
 
@@ -1944,13 +1951,16 @@ aocs_begin_headerscan(Relation rel, int colno)
 	ao_attr.overflowSize = 0;
 	ao_attr.safeFSWriteSize = 0;
 	hdesc = palloc(sizeof(AOCSHeaderScanDescData));
+	
+	RelationOpenSmgr(rel);
+
 	AppendOnlyStorageRead_Init(&hdesc->ao_read,
 							   NULL, //current memory context
 							   opts[colno]->blocksize,
 							   RelationGetRelationName(rel),
 							   "ALTER TABLE ADD COLUMN scan",
 							   &ao_attr,
-							   &rel->rd_node);
+							   &rel->rd_node, rel->rd_smgr->smgr_ao);
 	hdesc->colno = colno;
 	return hdesc;
 }
@@ -2035,6 +2045,9 @@ aocs_addcol_init(Relation rel,
                                  NULL);
 
 	iattr = rel->rd_att->natts - num_newcols;
+
+	RelationOpenSmgr(rel);
+
 	for (i = 0; i < num_newcols; ++i, ++iattr)
 	{
 		Form_pg_attribute attr = TupleDescAttr(rel->rd_att, iattr);
@@ -2050,7 +2063,8 @@ aocs_addcol_init(Relation rel,
 											   attr, RelationGetRelationName(rel),
 											   titleBuf.data,
 											   XLogIsNeeded() && RelationNeedsWAL(rel),
-											   &rnode);
+											   &rnode,
+											   rel->rd_smgr->smgr_ao);
 	}
 	return desc;
 }
