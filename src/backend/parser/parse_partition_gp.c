@@ -1469,7 +1469,7 @@ generatePartitions(Oid parentrelid, GpPartitionDefinition *gpPartSpec,
 	 */
 	foreach(lc, gpPartSpec->partDefElems)
 	{
-		Node	   *n PG_USED_FOR_ASSERTS_ONLY = lfirst(lc);
+		Node	   *n = lfirst(lc);
 
 		if (IsA(n, ColumnReferenceStorageDirective))
 			penc_cls = lappend(penc_cls, lfirst(lc));
