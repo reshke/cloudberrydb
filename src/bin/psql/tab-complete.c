@@ -2138,7 +2138,8 @@ psql_completion(const char *text, int start, int end)
 					  "ENABLE", "INHERIT", "NO", "RENAME", "RESET",
 					  "OWNER TO", "SET", "VALIDATE CONSTRAINT",
 					  "REPLICA IDENTITY", "ATTACH PARTITION",
-					  "DETACH PARTITION", "FORCE ROW LEVEL SECURITY", "EXCHANGE");
+					  "DETACH PARTITION", "FORCE ROW LEVEL SECURITY", 
+					  "EXCHANGE", "TRUNCATE");
 	/* ALTER TABLE xxx ENABLE */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ENABLE"))
 		COMPLETE_WITH("ALWAYS", "REPLICA", "ROW LEVEL SECURITY", "RULE",
@@ -2208,6 +2209,9 @@ psql_completion(const char *text, int start, int end)
 
 	/* If we have ALTER TABLE <sth> DROP, provide COLUMN, CONSTRAINT or PARTITION/DEFAULT PARTITION */
 	else if (Matches("ALTER", "TABLE", MatchAny, "DROP"))
+		COMPLETE_WITH("COLUMN", "CONSTRAINT", "PARTITION", "DEFAULT PARTITION");
+	/* If we have ALTER TABLE <sth> ADD, provide COLUMN, CONSTRAINT or PARTITION/DEFAULT PARTITION */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD"))
 		COMPLETE_WITH("COLUMN", "CONSTRAINT", "PARTITION", "DEFAULT PARTITION");
 	/* If we have ALTER TABLE <sth> DROP COLUMN, provide list of columns */
 	else if (Matches("ALTER", "TABLE", MatchAny, "DROP", "COLUMN"))
@@ -2310,12 +2314,12 @@ psql_completion(const char *text, int start, int end)
 	}
 	else if (Matches("ALTER", "TABLE", MatchAny, "DETACH", "PARTITION", MatchAny))
 		COMPLETE_WITH("CONCURRENTLY", "FINALIZE");
-
-
-	/* ALTER TABLE <foo> EXCHANGE  */
+	/* ALTER TABLE <foo> EXCHANGE, provide partition options */
 	else if (Matches("ALTER", "TABLE", MatchAny, "EXCHANGE"))
 		COMPLETE_WITH("PARTITION FOR (" , "DEFAULT PARTITION");
-
+	/* ALTER TABLE <foo> TRUNCATE, provide partition options */
+	else if (Matches("ALTER", "TABLE", MatchAny, "TRUNCATE"))
+		COMPLETE_WITH("PARTITION FOR (" , "DEFAULT PARTITION");
 	/* ALTER TABLESPACE <foo> with RENAME TO, OWNER TO, SET, RESET */
 	else if (Matches("ALTER", "TABLESPACE", MatchAny))
 		COMPLETE_WITH("RENAME TO", "OWNER TO", "SET", "RESET");
