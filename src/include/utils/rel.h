@@ -705,7 +705,7 @@ typedef struct ViewOptions
  * RelationUsesLocalBuffers
  *		True if relation's pages are stored in local buffers.
  *
- * In GPDB, we do not use local buffers for temp tables because segmates need
+ * In GPDB, we do not use local buffers for temp tables because segments need
  * to share temp table contents.  Currently, there is no other reason to use
  * local buffers.
  */
