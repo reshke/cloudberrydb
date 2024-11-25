@@ -832,8 +832,6 @@
 /* Define if zstd is available */
 #undef HAVE_ZSTD
 
-/* Define to 1 if the system has the type `_Bool'. */
-#undef HAVE__BOOL
 
 /* Define to 1 if your compiler understands __builtin_bswap16. */
 #undef HAVE__BUILTIN_BSWAP16
