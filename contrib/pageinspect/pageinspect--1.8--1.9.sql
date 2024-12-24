@@ -135,3 +135,45 @@ CREATE FUNCTION brin_page_items(IN page bytea, IN index_oid regclass,
 RETURNS SETOF record
 AS 'MODULE_PATHNAME', 'brin_page_items'
 LANGUAGE C STRICT PARALLEL SAFE;
+
+--
+-- appendonly_headers_info()
+-- 
+CREATE FUNCTION appendonly_headers_info(
+    reloid OID
+)
+RETURNS TABLE (
+    "first row number" BIGINT,
+    "large read position" BIGINT,
+    "buffer offset" INTEGER,
+    "block kind" TEXT,
+    "header kind" TEXT,
+    "current item count" INTEGER,
+    isCompressed BOOLEAN,
+    isLarge BOOLEAN,
+    dataLen INTEGER
+)
+AS 'MODULE_PATHNAME', 'appendonly_headers_info'
+    LANGUAGE C STRICT
+EXECUTE ON ALL SEGMENTS;
+
+
+--
+-- aocs_headers_info()
+-- 
+CREATE FUNCTION aocs_headers_info(
+    reloid OID
+)
+RETURNS TABLE (
+    "column number" INTEGER,
+    "large read position" BIGINT,
+    "buffer offset" INTEGER,
+    "header kind" TEXT,
+    "first row" INTEGER,
+    isCompressed BOOLEAN,
+    isLarge BOOLEAN,
+    "row count" INTEGER
+)
+AS 'MODULE_PATHNAME', 'aocs_headers_info'
+    LANGUAGE C STRICT
+EXECUTE ON ALL SEGMENTS;

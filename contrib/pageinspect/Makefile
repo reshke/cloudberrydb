@@ -11,7 +11,8 @@ OBJS = \
 	gistfuncs.o \
 	hashfuncs.o \
 	heapfuncs.o \
-	rawpage.o
+	rawpage.o \
+	aofuncs.o
 
 EXTENSION = pageinspect
 DATA =  pageinspect--1.8--1.9.sql \
