@@ -70,14 +70,6 @@
 #include "utils/snapmgr.h"
 
 
-typedef enum AoExecutorBlockKind
-{
-	AoExecutorBlockKind_None = 0,
-	AoExecutorBlockKind_VarBlock,
-	AoExecutorBlockKind_SingleRow,
-	MaxAoExecutorBlockKind		/* must always be last */
-}			AoExecutorBlockKind;
-
 static void AppendOnlyExecutionReadBlock_SetSegmentFileNum(
 											   AppendOnlyExecutorReadBlock *executorReadBlock,
 											   int segmentFileNum);

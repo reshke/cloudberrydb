@@ -359,7 +359,7 @@ initscan_with_colinfo(AOCSScanDesc scan)
 	pgstat_count_heap_scan(scan->rs_base.rs_rd);
 }
 
-static int
+int
 open_next_scan_seg(AOCSScanDesc scan)
 {
 	bool 		isParallel = false;
@@ -447,7 +447,7 @@ open_next_scan_seg(AOCSScanDesc scan)
 	return -1;
 }
 
-static void
+void
 close_cur_scan_seg(AOCSScanDesc scan)
 {
 	if (scan->cur_seg < 0)

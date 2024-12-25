@@ -57,6 +57,14 @@
 
 extern AppendOnlyBlockDirectory *GetAOBlockDirectory(Relation relation);
 
+typedef enum AoExecutorBlockKind
+{
+	AoExecutorBlockKind_None = 0,
+	AoExecutorBlockKind_VarBlock,
+	AoExecutorBlockKind_SingleRow,
+	MaxAoExecutorBlockKind		/* must always be last */
+}			AoExecutorBlockKind;
+
 /*
  * AppendOnlyInsertDescData is used for inserting data into append-only
  * relations. It serves an equivalent purpose as AppendOnlyScanDescData

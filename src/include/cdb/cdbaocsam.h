@@ -424,4 +424,7 @@ AOCSScanDesc_UpdateTotalBytesRead(AOCSScanDesc scan, AttrNumber attno)
 		scan->totalBytesRead += scan->columnScanInfo.ds[attno]->ao_read.current.uncompressedLen;
 }
 
+extern int open_next_scan_seg(AOCSScanDesc scan);
+extern void close_cur_scan_seg(AOCSScanDesc scan);
+
 #endif   /* AOCSAM_H */
