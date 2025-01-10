@@ -2398,6 +2398,10 @@ gethba_options(HbaLine *hba)
 			options[noptions++] =
 				CStringGetTextDatum(psprintf("ldapport=%d", hba->ldapport));
 
+		if (hba->ldapscheme)
+			options[noptions++] =
+				CStringGetTextDatum(psprintf("ldapscheme=%s", hba->ldapscheme));
+
 		if (hba->ldaptls)
 			options[noptions++] =
 				CStringGetTextDatum("ldaptls=true");
