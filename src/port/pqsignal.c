@@ -104,6 +104,10 @@ wrapper_handler(SIGNAL_ARGS)
  * function instead of providing potentially-bogus return values.
  * Unfortunately, that requires modifying the pqsignal() in legacy-pqsignal.c,
  * which in turn requires an SONAME bump, which is probably not worth it.
+ *
+ * The actual name of this function is pqsignal_fe when compiled with
+ * -DFRONTEND, or pqsignal otherwise, to avoid a collision with libpq's
+ * legacy-pqsignal.c.
  */
 pqsigfunc
 pqsignal(int signo, pqsigfunc func)
