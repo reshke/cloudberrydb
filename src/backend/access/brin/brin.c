@@ -404,7 +404,7 @@ bringetbitmap(IndexScanDesc scan, Node **bmNodeP)
 	Relation	heapRel;
 	BrinOpaque *opaque;
 	BlockNumber heapBlk;
-	int			totalpages = 0;
+	int64		totalpages = 0;
 	FmgrInfo   *consistentFn;
 	MemoryContext oldcxt;
 	MemoryContext perRangeCxt;
