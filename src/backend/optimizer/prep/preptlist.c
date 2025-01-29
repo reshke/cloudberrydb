@@ -56,11 +56,11 @@
 
 static bool check_splitupdate(List *tlist, Index result_relation, Relation rel);
 static List *supplement_simply_updatable_targetlist(PlannerInfo *root,
-													List *range_table,
-													List *tlist);
+											List *range_table,
+											List *tlist);
 
-static List *expand_insert_targetlist(List *tlist, Relation rel, Index split_update_result_relation);
-
+static List *expand_insert_targetlist(PlannerInfo *root, List *tlist,
+									  Relation rel, Index split_update_result_relation);
 
 
 /*
@@ -116,7 +116,7 @@ preprocess_targetlist(PlannerInfo *root)
 	 */
 	tlist = parse->targetList;
 	if (command_type == CMD_INSERT)
-		tlist = expand_insert_targetlist(tlist, target_relation, 0);
+		tlist = expand_insert_targetlist(root, tlist, target_relation, 0);
 	else if (command_type == CMD_UPDATE)
 	{
 		/*
@@ -137,7 +137,7 @@ preprocess_targetlist(PlannerInfo *root)
 				target_rte->relkind != RELKIND_PARTITIONED_TABLE)
 				ereport(ERROR, (errmsg("can't split update for inherit table: %s",
 								RelationGetRelationName(target_relation))));
-			tlist = expand_insert_targetlist(tlist, target_relation, result_relation);
+			tlist = expand_insert_targetlist(root, tlist, target_relation, result_relation);
 		}
 	}
 
@@ -335,7 +335,8 @@ extract_update_targetlist_colnos(List *tlist, bool reorder_resno)
  * but now this code is only applied to INSERT targetlists.
  */
 static List *
-expand_insert_targetlist(List *tlist, Relation rel, Index split_update_result_relation)
+expand_insert_targetlist(PlannerInfo *root, List *tlist, Relation rel,
+						Index split_update_result_relation)
 {
 	List	   *new_tlist = NIL;
 	ListCell   *tlist_item;
@@ -389,8 +390,6 @@ expand_insert_targetlist(List *tlist, Relation rel, Index split_update_result_re
 			 * confuse code comparing the finished plan to the target
 			 * relation, however.
 			 */
-			Oid			atttype = att_tup->atttypid;
-			Oid			attcollation = att_tup->attcollation;
 			Node	   *new_expr;
 
 			if (!att_tup->attisdropped)
@@ -398,30 +397,23 @@ expand_insert_targetlist(List *tlist, Relation rel, Index split_update_result_re
 				if (split_update_result_relation)
 				{
 					new_expr = (Node *) makeVar(split_update_result_relation,
-												attrno,
-												atttype,
-												att_tup->atttypmod,
-												attcollation,
-												0);
+											attrno,
+											att_tup->atttypid,
+											att_tup->atttypmod,
+											att_tup->attcollation,
+											0);
 				}
 				else
 				{
-				new_expr = (Node *) makeConst(atttype,
-											  -1,
-											  attcollation,
-											  att_tup->attlen,
-											  (Datum) 0,
-											  true, /* isnull */
-											  att_tup->attbyval);
-				new_expr = coerce_to_domain(new_expr,
-											InvalidOid, -1,
-											atttype,
-											COERCION_IMPLICIT,
-											COERCE_IMPLICIT_CAST,
-											-1,
-											false);
+					new_expr = coerce_null_to_domain(att_tup->atttypid,
+											 att_tup->atttypmod,
+											 att_tup->attcollation,
+											 att_tup->attlen,
+											 att_tup->attbyval);
+					/* Must run expression preprocessing on any non-const nodes */
+					if (!IsA(new_expr, Const))
+						new_expr = eval_const_expressions(root, new_expr);
 				}
-			}
 			else
 			{
 				/* Insert NULL for dropped column */
