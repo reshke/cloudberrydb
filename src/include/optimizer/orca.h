@@ -26,7 +26,7 @@ extern PlannedStmt * optimize_query(Query *parse, int cursorOptions, ParamListIn
 #else
 
 /* Keep compilers quiet in case the build used --disable-orca */
-static PlannedStmt *
+ __attribute__((unused)) static PlannedStmt *
 optimize_query(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
 	Assert(false);
