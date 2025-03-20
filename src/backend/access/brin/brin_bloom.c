@@ -479,7 +479,7 @@ brin_bloom_get_ndistinct(BrinDesc *bdesc, BloomOptions *opts)
 
 	Assert(BlockNumberIsValid(pagesPerRange));
 
-	maxtuples = MaxHeapTuplesPerPage * pagesPerRange;
+	maxtuples = MAX_TUPLES_PER_PAGE * pagesPerRange;
 
 	/*
 	 * Similarly to n_distinct, negative values are relative - in this case to
