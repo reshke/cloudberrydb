@@ -2433,7 +2433,6 @@ AC_CHECK_FUNCS(m4_normalize([
 	setproctitle_fast
 	setsid
 	shm_open
-	strchrnul
 	strsignal
 	symlink
 	syncfs
@@ -2486,6 +2485,7 @@ AC_CHECK_DECLS([strlcat, strlcpy, strnlen, timingsafe_bcmp])
 # won't handle deployment target restrictions on macOS
 AC_CHECK_DECLS([preadv], [], [AC_LIBOBJ(preadv)], [#include <sys/uio.h>])
 AC_CHECK_DECLS([pwritev], [], [AC_LIBOBJ(pwritev)], [#include <sys/uio.h>])
+AC_CHECK_DECLS([strchrnul], [], [], [#include <string.h>])
 
 # This is probably only present on macOS, but may as well check always
 AC_CHECK_DECLS(F_FULLFSYNC, [], [], [#include <fcntl.h>])
