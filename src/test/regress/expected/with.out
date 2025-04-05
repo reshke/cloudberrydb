@@ -1916,6 +1916,15 @@ ERROR:  window functions in the target list of a recursive query is not supporte
 LINE 4:  SELECT level+1, row_number() over() FROM x, bar)
                          ^
 CREATE TEMPORARY TABLE y (a INTEGER) DISTRIBUTED RANDOMLY;
+
+-- and this
+WITH RECURSIVE x(n) AS (
+  WITH sub_cte AS (SELECT * FROM x)
+  DELETE FROM graph RETURNING f)
+	SELECT * FROM x;
+ERROR:  recursive query "x" must not contain data-modifying statements
+LINE 1: WITH RECURSIVE x(n) AS (
+                       ^
 INSERT INTO y SELECT generate_series(1, 10);
 -- LEFT JOIN
 WITH RECURSIVE x(n) AS (SELECT a FROM y WHERE a = 1
