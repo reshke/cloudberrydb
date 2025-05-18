@@ -2421,7 +2421,6 @@ AC_CHECK_FUNCS(m4_normalize([
 	getrlimit
 	kqueue
 	mbstowcs_l
-	memset_s
 	poll
 	posix_fallocate
 	ppoll
@@ -2486,6 +2485,8 @@ AC_CHECK_DECLS([strlcat, strlcpy, strnlen, timingsafe_bcmp])
 AC_CHECK_DECLS([preadv], [], [AC_LIBOBJ(preadv)], [#include <sys/uio.h>])
 AC_CHECK_DECLS([pwritev], [], [AC_LIBOBJ(pwritev)], [#include <sys/uio.h>])
 AC_CHECK_DECLS([strchrnul], [], [], [#include <string.h>])
+AC_CHECK_DECLS([memset_s], [], [], [#define __STDC_WANT_LIB_EXT1__ 1
+#include <string.h>])
 
 # This is probably only present on macOS, but may as well check always
 AC_CHECK_DECLS(F_FULLFSYNC, [], [], [#include <fcntl.h>])
