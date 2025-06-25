@@ -565,7 +565,14 @@ vacuum(List *relations, VacuumParams *params,
 
 			if (params->options & VACOPT_VACUUM)
 			{
-				if (!vacuum_rel(vrel->oid, vrel->relation, params, false))
+				VacuumParams params_copy;
+
+				/*
+				 * vacuum_rel() scribbles on the parameters, so give it a copy
+				 * to avoid affecting other relations.
+				 */
+				memcpy(&params_copy, params, sizeof(VacuumParams));
+				if (!vacuum_rel(vrel->oid, vrel->relation, &params_copy, false))
 					continue;
 			}
 
@@ -2329,6 +2336,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	int			ao_vacuum_phase;
 	int			save_sec_context;
 	int			save_nestlevel;
+	VacuumParams toast_vacuum_params;
 	bool			is_appendoptimized;
 	bool			is_toast;
 
@@ -2338,7 +2346,13 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	char			onerelname[NAMEDATALEN];
 #endif
 
- 	ao_vacuum_phase = (params->options & VACUUM_AO_PHASE_MASK);
+	ao_vacuum_phase = (params->options & VACUUM_AO_PHASE_MASK);
+
+	/*
+	 * This function scribbles on the parameters, so make a copy early to
+	 * avoid affecting the TOAST table (if we do end up recursing to it).
+	 */
+	memcpy(&toast_vacuum_params, params, sizeof(VacuumParams));
 
 	/* Begin a transaction for vacuuming this relation */
 	StartTransactionCommand();
@@ -2821,80 +2835,23 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	 * being dispatched vacuum separately.
 	 */
 	if (toast_relid != InvalidOid)
-		vacuum_rel(toast_relid, NULL, params, true);
+	VacuumParams toast_vacuum_params;
+	bool			is_appendoptimized;
+	bool			is_toast;
 
-	/* do the same for an AO segments table, if any */
-	if (aoseg_relid != InvalidOid)
-		vacuum_rel(aoseg_relid, NULL , params, true);
+	Assert(params != NULL);
 
-	/* do the same for an AO block directory table, if any */
-	if (aoblkdir_relid != InvalidOid)
-		vacuum_rel(aoblkdir_relid, NULL, params, true);
+#ifdef FAULT_INJECTOR
+	char			onerelname[NAMEDATALEN];
+#endif
 
-	/* do the same for an AO visimap, if any */
-	if (aovisimap_relid != InvalidOid)
-		vacuum_rel(aovisimap_relid, NULL, params, true);
-	params->options = orig_option;
+	ao_vacuum_phase = (params->options & VACUUM_AO_PHASE_MASK);
 
 	/*
-	 * Don't dispatch auto-vacuum. Each segment performs auto-vacuum as per
-	 * its own need.
+	 * This function scribbles on the parameters, so make a copy early to
+	 * avoid affecting the TOAST table (if we do end up recursing to it).
 	 */
-	if ((Gp_role == GP_ROLE_DISPATCH || IS_SINGLENODE()) && !recursing &&
-		!IsAutoVacuumWorkerProcess() &&
-		(!is_appendoptimized || ao_vacuum_phase))
-	{
-		VacuumStatsContext stats_context;
-		char	   *vsubtype;
-
-		/*
-		 * SINGLENODE_FIXME:
-		 * From my understanding, we don't need to open a transaction here since
-		 * we don't need to dispatch.
-		 * However, there is some assert below to make sure we are in a transaction.
-		 * Make it more reasonable in the future.
-		 */
-		/*
-		 * Dispatching needs a transaction. At least in some error scenarios,
-		 * it uses TopTransactionContext to store stuff.
-		 */
-		StartTransactionCommand();
-		PushActiveSnapshot(GetTransactionSnapshot());
-
-		if (Gp_role == GP_ROLE_DISPATCH)
-		{
-			stats_context.updated_stats = NIL;
-			dispatchVacuum(params, relid, &stats_context);
-			vac_update_relstats_from_list(&stats_context);
-		}
-
-		/* Also update pg_stat_last_operation */
-		if (IsAutoVacuumWorkerProcess())
-			vsubtype = "AUTO";
-		else
-		{
-			if ((params->options & VACOPT_FULL) &&
-				(0 == params->freeze_min_age))
-				vsubtype = "FULL FREEZE";
-			else if ((params->options & VACOPT_FULL))
-				vsubtype = "FULL";
-			else if (0 == params->freeze_min_age)
-				vsubtype = "FREEZE";
-			else
-				vsubtype = "";
-		}
-		MetaTrackUpdObject(RelationRelationId,
-						   relid,
-						   GetUserId(),
-						   "VACUUM",
-						   vsubtype);
-
-		/* Restore userid and security context */
-		SetUserIdAndSecContext(save_userid, save_sec_context);
-
-		PopActiveSnapshot();
-		CommitTransactionCommand();
-	}
+	memcpy(&toast_vacuum_params, params, sizeof(VacuumParams));
 
 	/*
 	 * Now release the session-level lock on the main table.
