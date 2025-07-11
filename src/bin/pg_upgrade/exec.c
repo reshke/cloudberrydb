@@ -406,11 +406,12 @@ check_bin_dir(ClusterInfo *cluster, bool check_versions)
 	get_bin_version(cluster);
 
 	/* pg_resetxlog has been renamed to pg_resetwal in version 10 */
+	/*
 	if (GET_MAJOR_VERSION(cluster->bin_version) <= 906)
 		check_exec(cluster->bindir, "pg_resetxlog", check_versions);
 	else
 		check_exec(cluster->bindir, "pg_resetwal", check_versions);
-
+*/
 	if (cluster == &new_cluster)
 	{
 		/*
