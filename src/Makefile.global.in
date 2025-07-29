@@ -285,7 +285,7 @@ CPP = @CPP@
 CPPFLAGS = @CPPFLAGS@
 PG_SYSROOT = @PG_SYSROOT@
 
-override CPPFLAGS := $(ICU_CFLAGS) $(ZSTD_CFLAGS) $(CPPFLAGS)
+override CPPFLAGS := $(CPPFLAGS) $(ICU_CFLAGS) $(ZSTD_CFLAGS)
 
 ifdef PGXS
 override CPPFLAGS := -I$(includedir_server) -I$(includedir_internal) $(CPPFLAGS)
