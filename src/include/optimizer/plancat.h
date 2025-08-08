@@ -93,6 +93,8 @@ extern double get_function_rows(PlannerInfo *root, Oid funcid, Node *node);
 
 extern bool has_row_triggers(PlannerInfo *root, Index rti, CmdType event);
 
+extern bool has_transition_tables(PlannerInfo *root, Index rti, CmdType event);
+
 extern bool has_stored_generated_columns(PlannerInfo *root, Index rti);
 
 #define DEFAULT_EXTERNAL_TABLE_PAGES 1000
