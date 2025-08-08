@@ -2734,6 +2734,11 @@ delete from child2;
 delete from child3;
 -- copy into parent sees parent-format tuples
 copy parent (a, b) from stdin;
+NOTICE:  trigger = parent_insert_trig, new table = (AAA,42), (BBB,42), (CCC,42)
+-- check detach/reattach behavior; statement triggers with transition tables
+-- should not prevent a table from becoming a partition again
+alter table parent detach partition child1;
+alter table parent attach partition child1 for values in ('AAA');
 -- DML affecting parent sees tuples collected from children even if
 -- there is no transition table trigger on the children
 drop trigger child1_insert_trig on child1;
@@ -2935,6 +2940,11 @@ copy parent (a, b) from stdin;
 -- captured by a different code path in copyfrom.c if there are indexes)
 create index on parent(b);
 copy parent (a, b) from stdin;
+NOTICE:  trigger = parent_insert_trig, new table = (DDD,42)
+-- check disinherit/reinherit behavior; statement triggers with transition
+-- tables should not prevent a table from becoming an inheritance child again
+alter table child1 no inherit parent;
+alter table child1 inherit parent;
 -- DML affecting parent sees tuples collected from children even if
 -- there is no transition table trigger on the children
 drop trigger child1_insert_trig on child1;
