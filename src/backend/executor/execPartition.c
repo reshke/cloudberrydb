@@ -384,7 +384,7 @@ ExecFindPartition(ModifyTableState *mtstate,
 				if (rri)
 				{
 					/* Verify this ResultRelInfo allows INSERTs */
-					CheckValidResultRel(rri, CMD_INSERT, NULL);
+					CheckValidResultRel(rri, CMD_INSERT, mtstate);
 
 					/*
 					 * Initialize information needed to insert this and
@@ -582,7 +582,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	 * partition-key becomes a DELETE+INSERT operation, so this check is still
 	 * required when the operation is CMD_UPDATE.
 	 */
-	CheckValidResultRel(leaf_part_rri, CMD_INSERT, NULL);
+	CheckValidResultRel(leaf_part_rri, CMD_INSERT, mtstate);
 
 	/*
 	 * Open partition indices.  The user may have asked to check for conflicts

@@ -2101,6 +2101,14 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation, ModifyTable
 		case RELKIND_RELATION:
 		case RELKIND_PARTITIONED_TABLE:
 			CheckCmdReplicaIdentity(resultRel, operation);
+			/*
+			 * INSERT ON CONFLICT DO UPDATE can update the target even when no
+			 * conflicting row is found.  Verify that published tables support
+			 * updates before execution starts.
+			 */
+			if (mtstate &&
+				((ModifyTable *) mtstate->ps.plan)->onConflictAction == ONCONFLICT_UPDATE)
+				CheckCmdReplicaIdentity(resultRel, CMD_UPDATE);
 			break;
 		case RELKIND_SEQUENCE:
 			ereport(ERROR,
