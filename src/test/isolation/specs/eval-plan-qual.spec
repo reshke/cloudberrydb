@@ -93,6 +93,9 @@ step upsert1	{
 	  WHERE NOT EXISTS (SELECT 1 FROM upsert);
 }
 
+# Tests for Tid Scan
+step tid1 { UPDATE accounts SET balance = balance + 100 WHERE ctid = '(0,1)' RETURNING accountid, balance; }
+
 # tests with table p check inheritance cases:
 # readp1/writep1/readp2 tests a bug where nodeLockRows did the wrong thing
 # when the first updated tuple was in a non-first child table.
@@ -222,6 +225,18 @@ step updateforcip3	{
 }
 step wrtwcte	{ UPDATE table_a SET value = 'tableAValue2' WHERE id = 1; }
 step wrjt	{ UPDATE jointest SET data = 42 WHERE id = 7; }
+<<<<<<< HEAD
+=======
+
+step tid2 { UPDATE accounts SET balance = balance + 200 WHERE ctid = '(0,1)' RETURNING accountid, balance; }
+# here, recheck succeeds; (0,3) is the id that step tid1 will assign
+step tidsucceed2 { UPDATE accounts SET balance = balance + 200 WHERE ctid = '(0,1)' OR ctid = '(0,3)' RETURNING accountid, balance; }
+
+step conditionalpartupdate	{
+	update parttbl set c = -c where b < 10;
+}
+
+>>>>>>> 2eb7ea97d8a (Add missing EPQ recheck for TID Scan)
 step complexpartupdate	{
 	with u as (update parttbl set a = a returning parttbl.*)
 	update parttbl set a = u.a from u;
@@ -352,6 +367,10 @@ permutation wrtwcte readwcte c1 c2
 permutation wrjt selectjoinforupdate c2 c1
 permutation wrjt selectresultforupdate c2 c1
 permutation wrtwcte multireadwcte c1 c2
+permutation tid1 tid2 c1 c2 read
+permutation tid1 tidsucceed2 c1 c2 read
+# test that a rollback on s1 has s2 perform the update on the original row
+permutation tid1 tid2 r1 c2 read
 
 permutation simplepartupdate complexpartupdate c1 c2
 permutation simplepartupdate_route1to2 complexpartupdate_route_err1 c1 c2
