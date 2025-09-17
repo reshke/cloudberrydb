@@ -226,19 +226,12 @@ step updateforcip3	{
 }
 step wrtwcte	{ UPDATE table_a SET value = 'tableAValue2' WHERE id = 1; }
 step wrjt	{ UPDATE jointest SET data = 42 WHERE id = 7; }
-<<<<<<< HEAD
-=======
 
 step tid2 { UPDATE accounts SET balance = balance + 200 WHERE ctid = '(0,1)' RETURNING accountid, balance; }
 step tidrange2 { UPDATE accounts SET balance = balance + 200 WHERE ctid BETWEEN '(0,1)' AND '(0,1)' RETURNING accountid, balance; }
 # here, recheck succeeds; (0,3) is the id that step tid1 will assign
 step tidsucceed2 { UPDATE accounts SET balance = balance + 200 WHERE ctid = '(0,1)' OR ctid = '(0,3)' RETURNING accountid, balance; }
 
-step conditionalpartupdate	{
-	update parttbl set c = -c where b < 10;
-}
-
->>>>>>> 2eb7ea97d8a (Add missing EPQ recheck for TID Scan)
 step complexpartupdate	{
 	with u as (update parttbl set a = a returning parttbl.*)
 	update parttbl set a = u.a from u;

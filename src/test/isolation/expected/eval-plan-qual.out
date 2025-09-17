@@ -1104,9 +1104,6 @@ subid|id
 (1 row)
 
 
-<<<<<<< HEAD
-starting permutation: simplepartupdate complexpartupdate c1 c2
-=======
 starting permutation: tid1 tid2 c1 c2 read
 step tid1: UPDATE accounts SET balance = balance + 100 WHERE ctid = '(0,1)' RETURNING accountid, balance;
 accountid|balance
@@ -1201,8 +1198,7 @@ savings  |    600|    1200
 (2 rows)
 
 
-starting permutation: simplepartupdate conditionalpartupdate c1 c2 read_part
->>>>>>> 2eb7ea97d8a (Add missing EPQ recheck for TID Scan)
+starting permutation: simplepartupdate complexpartupdate c1 c2
 step simplepartupdate: 
 	update parttbl set a = a;
 
