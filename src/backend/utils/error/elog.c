@@ -4998,13 +4998,24 @@ write_stderr(const char *fmt,...)
 {
 	va_list		ap;
 
+	va_start(ap, fmt);
+	vwrite_stderr(fmt, ap);
+	va_end(ap);
+}
+
+
+/*
+ * Write errors to stderr (or by equal means when stderr is
+ * not available) - va_list version
+ */
+void
+vwrite_stderr(const char *fmt, va_list ap)
+{
 #ifdef WIN32
 	char		errbuf[2048];	/* Arbitrary size? */
 #endif
 
 	fmt = _(fmt);
-
-	va_start(ap, fmt);
 
 	if (Logging_collector && gp_log_format == 1)
 	{
@@ -5016,23 +5027,23 @@ write_stderr(const char *fmt,...)
 		{
 			/* Write the message in the CSV format */
 			write_message_to_server_log(LOG,
-										0,
-										errbuf,
-										NULL,
-										NULL,
-										NULL,
-										0,
-										0,
-										NULL,
-										NULL,
-										NULL,
-										false,
-										NULL,
-										0,
-										0,
-										true,
-										NULL,
-										false);
+									0,
+									errbuf,
+									NULL,
+									NULL,
+									NULL,
+									0,
+									0,
+									NULL,
+									NULL,
+									NULL,
+									false,
+									NULL,
+									0,
+									0,
+									true,
+									NULL,
+									false);
 		}
 		else
 		{
@@ -5047,7 +5058,6 @@ write_stderr(const char *fmt,...)
 				write_syslogger_in_csv(&edata, false);
 		}
 
-		va_end(ap);
 		return;
 	}
 
@@ -5073,7 +5083,6 @@ write_stderr(const char *fmt,...)
 		fflush(stderr);
 	}
 #endif
-	va_end(ap);
 }
 
 /*
