@@ -314,6 +314,17 @@ DOTypeNameCompare(const void *p1, const void *p2)
 			return cmpval;
 	}
 
+	else if (obj1->objType == DO_FK_CONSTRAINT)
+	{
+		ConstraintInfo *robj1 = *(ConstraintInfo *const *) p1;
+		ConstraintInfo *robj2 = *(ConstraintInfo *const *) p2;
+
+		/* Sort by table name (table namespace was considered already) */
+		cmpval = strcmp(robj1->contable->dobj.name,
+						robj2->contable->dobj.name);
+		if (cmpval != 0)
+			return cmpval;
+	}
 	else if (obj1->objType == DO_DEFAULT_ACL)
 	{
 		DefaultACLInfo *daclobj1 = *(DefaultACLInfo *const *) p1;
