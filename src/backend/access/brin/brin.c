@@ -403,7 +403,7 @@ bringetbitmap(IndexScanDesc scan, Node **bmNodeP)
 	Oid			heapOid;
 	Relation	heapRel;
 	BrinOpaque *opaque;
-	BlockNumber heapBlk;
+	uint64		heapBlk;
 	int64		totalpages = 0;
 	FmgrInfo   *consistentFn;
 	MemoryContext oldcxt;
@@ -596,9 +596,9 @@ bringetbitmap(IndexScanDesc scan, Node **bmNodeP)
 	 * this gives us a full view of each block sequence and ultimately, the
 	 * full table.
 	 */
-	BlockNumber startblknum = sequences[i].startblknum;
-	BlockNumber endblknum = sequences[i].startblknum + sequences[i].nblocks;
-	int			currseq = AOSegmentGet_blockSequenceNum(startblknum);
+	uint64		startblknum = sequences[i].startblknum;
+	uint64		endblknum = startblknum + sequences[i].nblocks;
+	int			currseq = AOSegmentGet_blockSequenceNum((BlockNumber) startblknum);
 
 	if (RelationIsAppendOptimized(heapRel))
 		brinRevmapAOPositionAtStart(opaque->bo_rmAccess, currseq);
@@ -615,7 +615,7 @@ bringetbitmap(IndexScanDesc scan, Node **bmNodeP)
 
 		MemoryContextResetAndDeleteChildren(perRangeCxt);
 
-		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, heapBlk, &buf,
+		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, (BlockNumber) heapBlk, &buf,
 									   &off, &size, BUFFER_LOCK_SHARE,
 									   scan->xs_snapshot);
 		if (tup)
@@ -791,14 +791,14 @@ bringetbitmap(IndexScanDesc scan, Node **bmNodeP)
 		/* add the pages in the range to the output bitmap, if needed */
 		if (addrange)
 		{
-			BlockNumber pageno;
+			uint64		pageno;
 
 			for (pageno = heapBlk;
 				 pageno <= Min(endblknum, heapBlk + opaque->bo_pagesPerRange) - 1;
 				 pageno++)
 			{
 				MemoryContextSwitchTo(oldcxt);
-				tbm_add_page(tbm, pageno);
+				tbm_add_page(tbm, (BlockNumber) pageno);
 				totalpages++;
 				MemoryContextSwitchTo(perRangeCxt);
 
