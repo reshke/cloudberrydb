@@ -36,7 +36,9 @@
 
 #include "cdb/cdbvars.h"        /* Gp_role, GpIdentity.segindex, currentSliceId */
 
+#if !defined(WIN32) || defined(_MSC_VER)
 extern char **environ;
+#endif
 extern int PostPortNumber; /* GPDB: Helps identify child processes */
 bool		update_process_title = true;
 
