@@ -1486,6 +1486,7 @@ asyncQueueAddEntries(ListCell *nextNotify)
 			 */
 			qe.length = QUEUE_PAGESIZE - offset;
 			qe.dboid = InvalidOid;
+			qe.xid = InvalidTransactionId;
 			qe.data[0] = '\0';	/* empty channel */
 			qe.data[1] = '\0';	/* empty payload */
 		}
