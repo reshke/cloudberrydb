@@ -874,6 +874,7 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 	int			next_pageno;
 	int			next_entryno;
 	MultiXactOffset *next_offptr;
+	MultiXactOffset next_offset;
 
 	LWLockAcquire(MultiXactOffsetSLRULock, LW_EXCLUSIVE);
 
@@ -960,11 +961,15 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 		next_offptr += next_entryno;
 	}
 
-	if (*next_offptr != offset + nmembers)
+	/* Like in GetNewMultiXactId(), skip over offset 0 */
+	next_offset = offset + nmembers;
+	if (next_offset == 0)
+		next_offset = 1;
+	if (*next_offptr != next_offset)
 	{
 		/* should already be set to the correct value, or not at all */
 		Assert(*next_offptr == 0);
-		*next_offptr = offset + nmembers;
+		*next_offptr = next_offset;
 		MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
 	}
 
