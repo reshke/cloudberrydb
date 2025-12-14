@@ -34,6 +34,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/queryjumble.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "optimizer/tlist.h"
@@ -56,7 +57,6 @@
 #include "utils/backend_status.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
-#include "utils/queryjumble.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
