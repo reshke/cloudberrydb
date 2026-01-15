@@ -863,6 +863,8 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 
 /*
  *	mdtruncate() -- Truncate relation to specified number of blocks.
+ * If nblocks > curnblk, the request is ignored when we are in InRecovery,
+ * otherwise, an error is raised.
  */
 void
 mdtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
