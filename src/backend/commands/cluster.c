@@ -210,7 +210,7 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 		table_close(rel, NoLock);
 
 		/* Do the job. */
-		/* GPDB_14_MERGE_FIXME: do we need the return value of cluster_rel to dispath ? */
+		/* GPDB_14_MERGE_FIXME: do we need the return value of cluster_rel to dispatch ? */
 		cluster_rel(tableOid, indexOid, &params);
 
 		if (Gp_role == GP_ROLE_DISPATCH)
@@ -1277,9 +1277,9 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 				reltup2;
 	Form_pg_class relform1,
 				relform2;
-	RelFileNodeId relfilenode1,
+	Oid relfilenode1,
 				  relfilenode2;
-	RelFileNodeId swaptemp;
+	Oid swaptemp;
 	char		swptmpchr;
 
 	/* We need writable copies of both pg_class tuples. */
@@ -1468,6 +1468,27 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		swap_allvisible = relform1->relallvisible;
 		relform1->relallvisible = relform2->relallvisible;
 		relform2->relallvisible = swap_allvisible;
+	}
+
+	/*
+	 * Swap auxiliary tables if the table AM has non-standard structure.
+	 * See the details of the callback swap_relation_files.
+	 */
+	if ((relform1->relkind == RELKIND_RELATION ||
+		relform1->relkind == RELKIND_MATVIEW)
+		&& (relform1->relam == PAX_AM_OID || 
+			relform2->relam == PAX_AM_OID))
+	{
+		const TableAmRoutine *tam;
+		Oid relam;
+
+		relam = relform1->relam;
+		if (relam != relform2->relam)
+			elog(ERROR, "PAX not allow swap relation files for different AM");
+
+		tam = GetTableAmRoutineByAmId(relam);
+		if (tam->swap_relation_files)
+			tam->swap_relation_files(r1, r2, frozenXid, cutoffMulti);
 	}
 
 	/*

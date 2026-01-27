@@ -67,6 +67,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
+#include "parser/analyze.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_type.h"
 #include "parser/parser.h"
@@ -581,6 +582,7 @@ bool		Debug_print_parse = false;
 bool		Debug_print_rewritten = false;
 bool		Debug_pretty_print = true;
 bool 		Debug_print_ivm = false;
+bool 		Debug_print_aggref_in_explain = false;
 
 bool		log_parser_stats = false;
 bool		log_planner_stats = false;
@@ -1545,6 +1547,15 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"debug_print_aggref_in_explain", PGC_USERSET, LOGGING_WHAT,
+			gettext_noop("Logs the aggnos/aggtransno in explain."),
+			NULL
+		},
+		&Debug_print_aggref_in_explain,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"log_parser_stats", PGC_SUSET, STATS_MONITORING,
 			gettext_noop("Writes parser performance statistics to the server log."),
 			NULL
@@ -2209,6 +2220,13 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"enable_lock_optimization", PGC_SIGHUP, CUSTOM_OPTIONS},
+		&enableLockOptimization,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -2272,7 +2290,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_EXPLAIN
 		},
 		&join_collapse_limit,
-		20, 1, INT_MAX,
+		13, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
 	{
@@ -2631,6 +2649,16 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&max_prepared_xacts,
 		50, 1, MAX_BACKENDS,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"find_writer_proc_retry_time", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the retry time of find writer proc entry."),
+			NULL
+		},
+		&find_writer_proc_retry_time,
+		5, 1, 5000,
 		NULL, NULL, NULL
 	},
 
@@ -3810,7 +3838,7 @@ static struct config_real ConfigureNamesReal[] =
 			GUC_EXPLAIN
 		},
 		&hash_mem_multiplier,
-		1.0, 1.0, 1000.0,
+		1.5, 1.0, 1000.0,
 		NULL, NULL, NULL
 	},
 

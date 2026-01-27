@@ -57,14 +57,18 @@
 #include "access/transam.h"
 #include "cdb/cdbaocsam.h"
 #include "cdb/cdbappendonlyam.h"
+#include "cdb/cdbdisp_query.h"
 #include "cdb/cdbhash.h"
+#include "cdb/cdbpq.h"
 #include "cdb/cdbvars.h"
+#include "common/hashfn.h" /* hash_any */
 #include "parser/parsetree.h"
+#include "utils/hsearch.h" /* hash_destroy */
 #include "utils/lsyscache.h"
 #include "utils/snapmgr.h"
 
-ext_dml_func_hook_type ext_dml_init_hook   = NULL;
-ext_dml_func_hook_type ext_dml_finish_hook = NULL;
+#include "libpq/libpq.h"
+#include "libpq/pqformat.h"
 
 typedef struct MTTargetRelLookup
 {
@@ -93,6 +97,53 @@ static TupleTableSlot *ExecPrepareTupleRouting(ModifyTableState *mtstate,
 											   ResultRelInfo *targetRelInfo,
 											   TupleTableSlot *slot,
 											   ResultRelInfo **partRelInfo);
+
+typedef struct ModifiedLeafRelidsKey
+{
+	CmdType	cmd;
+	Oid		relid;
+
+} ModifiedLeafRelidsKey;
+
+typedef struct ModifiedLeafRelidsData
+{
+	ModifiedLeafRelidsKey	key;
+} ModifiedLeafRelidsData;
+
+static uint32
+modified_leaf_hash(const void *key, Size keysize)
+{
+	Assert(keysize == sizeof(ModifiedLeafRelidsKey));
+	return DatumGetUInt32(hash_any((const unsigned char*) key,
+									keysize));
+}
+
+static int
+modified_leaf_compare(const void *key1, const void *key2, Size keysize)
+{
+	Assert(keysize == sizeof(ModifiedLeafRelidsKey));
+	const ModifiedLeafRelidsKey *k1 = (ModifiedLeafRelidsKey*) key1;
+	const ModifiedLeafRelidsKey *k2 = (ModifiedLeafRelidsKey*) key2;
+
+	if ((k1->cmd == k2->cmd) &&
+		(k1->relid == k2->relid))
+	{
+		return 0;
+	}
+	return 1;
+}
+
+static void
+send_subtag(StringInfoData *buf, ExtendProtocolSubTag subtag, List *relids);
+
+static void
+notify_modified_relations_to_QD(ModifyTableState *node);
+
+static void
+notify_modified_relations_local(ModifyTableState *node);
+
+static void
+epd_add_subtag_data(ExtendProtocolSubTag subtag, List *relids);
 
 /*
  * Verify that the tuples to be produced by INSERT match the
@@ -1033,6 +1084,17 @@ ExecInsert(ModifyTableState *mtstate,
 	if (canSetTag)
 		(estate->es_processed)++;
 
+	if (resultRelationDesc->rd_rel->relispartition)
+	{
+		ModifiedLeafRelidsKey	key;
+
+		MemSet(&key, 0, sizeof(key));
+		key.cmd = CMD_INSERT;
+		key.relid = RelationGetRelid(resultRelationDesc);
+
+		(void) hash_search(mtstate->modified_leaf_relids, &key, HASH_ENTER, NULL);
+	}
+
 	/*
 	 * If this insert is the result of a partition key update that moved the
 	 * tuple to a new partition, put this row into the transition NEW TABLE,
@@ -1493,6 +1555,17 @@ ldelete:;
 
 	if (canSetTag)
 		(estate->es_processed)++;
+
+	if (resultRelationDesc->rd_rel->relispartition)
+	{
+		ModifiedLeafRelidsKey	key;
+
+		MemSet(&key, 0, sizeof(key));
+		key.cmd = CMD_DELETE;
+		key.relid = RelationGetRelid(resultRelationDesc);
+
+		(void) hash_search(mtstate->modified_leaf_relids, &key, HASH_ENTER, NULL);
+	}
 
 	/* Tell caller that the delete actually happened. */
 	if (tupleDeleted)
@@ -2135,6 +2208,17 @@ lreplace:;
 
 	if (canSetTag)
 		(estate->es_processed)++;
+
+	if (resultRelationDesc->rd_rel->relispartition)
+	{
+		ModifiedLeafRelidsKey	key;
+
+		MemSet(&key, 0, sizeof(key));
+		key.cmd = CMD_UPDATE;
+		key.relid = RelationGetRelid(resultRelationDesc);
+
+		(void) hash_search(mtstate->modified_leaf_relids, &key, HASH_ENTER, NULL);
+	}
 
 	/* AFTER ROW UPDATE Triggers */
 	/* GPDB: AO and AOCO tables don't support triggers */
@@ -2964,6 +3048,17 @@ ExecModifyTable(PlanState *pstate)
 
 	node->mt_done = true;
 
+	/*
+	 * For SINGLENODE mode or we are entry db, we could not use extend
+	 * libpq to send message because we actually already on kind of QD
+	 * role.
+	 * Process modified relations here instead of EndModifiyTable().
+	 * It's too late to do there because we update materialized views
+	 * when executor end.
+	 */
+	if (IS_QD_OR_SINGLENODE())
+		notify_modified_relations_local(node);
+
 	return NULL;
 }
 
@@ -3038,6 +3133,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	ListCell   *l;
 	int			i;
 	Relation	rel;
+	HASHCTL		hash_ctl;
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
@@ -3049,6 +3145,17 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	mtstate->ps.plan = (Plan *) node;
 	mtstate->ps.state = estate;
 	mtstate->ps.ExecProcNode = ExecModifyTable;
+
+	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+	hash_ctl.keysize = sizeof(ModifiedLeafRelidsKey);
+	hash_ctl.entrysize = sizeof(ModifiedLeafRelidsData);
+	hash_ctl.hash = modified_leaf_hash;
+	hash_ctl.match = modified_leaf_compare;
+	hash_ctl.hcxt = CurrentMemoryContext;
+	mtstate->modified_leaf_relids = hash_create("ModifiedLeafRelids",
+												4,
+												&hash_ctl,
+												HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
 
 	mtstate->operation = operation;
 	mtstate->canSetTag = node->canSetTag;
@@ -3151,12 +3258,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 								   "supported in serializable transactions")));
 		}
 
-		if (RelationIsAoRows(resultRelInfo->ri_RelationDesc))
-			appendonly_dml_init(resultRelInfo->ri_RelationDesc, operation);
-		else if (RelationIsAoCols(resultRelInfo->ri_RelationDesc))
-			aoco_dml_init(resultRelInfo->ri_RelationDesc, operation);
-		else if (ext_dml_init_hook)
-			ext_dml_init_hook(resultRelInfo->ri_RelationDesc, operation);
+		table_dml_init(resultRelInfo->ri_RelationDesc, operation);
 
 		resultRelInfo++;
 		i++;
@@ -3186,6 +3288,11 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	{
 		resultRelInfo = &mtstate->resultRelInfo[i];
 
+		if (resultRelInfo->ri_RelationDesc->rd_tableam &&
+			(table_scan_flags(resultRelInfo->ri_RelationDesc) & SCAN_FORCE_BIG_WRITE_LOCK))
+		{
+			LockRelation(resultRelInfo->ri_RelationDesc, ExclusiveLock);
+		}
 		/* Let FDWs init themselves for foreign-table result rels */
 		if (!resultRelInfo->ri_usesFdwDirectModify &&
 			resultRelInfo->ri_FdwRoutine != NULL &&
@@ -3602,13 +3709,7 @@ ExecEndModifyTable(ModifyTableState *node)
 			resultRelInfo->ri_FdwRoutine->EndForeignModify(node->ps.state,
 														   resultRelInfo);
 
-		if (RelationIsAoRows(resultRelInfo->ri_RelationDesc))
-			appendonly_dml_finish(resultRelInfo->ri_RelationDesc,
-								  node->operation);
-		else if (RelationIsAoCols(resultRelInfo->ri_RelationDesc))
-			aoco_dml_finish(resultRelInfo->ri_RelationDesc, node->operation);
-		else if (ext_dml_finish_hook)
-			ext_dml_finish_hook(resultRelInfo->ri_RelationDesc, node->operation);
+		table_dml_fini(resultRelInfo->ri_RelationDesc, node->operation);
 
 		/*
 		 * Cleanup the initialized batch slots. This only matters for FDWs
@@ -3654,6 +3755,13 @@ ExecEndModifyTable(ModifyTableState *node)
 	 * shut down subplan
 	 */
 	ExecEndNode(outerPlanState(node));
+
+	/* Notify modified leaf relids to QD */
+	if (GP_ROLE_EXECUTE == Gp_role &&
+		hash_get_num_entries(node->modified_leaf_relids) > 0)
+		notify_modified_relations_to_QD(node);
+
+	hash_destroy(node->modified_leaf_relids);
 }
 
 void
@@ -3690,4 +3798,210 @@ ExecSquelchModifyTable(ModifyTableState *node, bool force)
 		if (!result)
 			break;
 	}
+}
+
+/*
+ * notify_modified_relations_to_QD
+ * Send modified relation info back to QD through extend libpq protocol.
+ */
+static void
+notify_modified_relations_to_QD(ModifyTableState *node)
+{
+	StringInfoData buf;
+	HASH_SEQ_STATUS scan;
+	ModifiedLeafRelidsData *r;
+	List *inserted = NIL;
+	List *updated = NIL;
+	List *deleted = NIL;
+
+	hash_seq_init(&scan, node->modified_leaf_relids);
+
+	pq_beginmessage(&buf, PQExtendProtocol);
+
+	while ((r = (ModifiedLeafRelidsData *) hash_seq_search(&scan)) != NULL)
+	{
+		switch (r->key.cmd)
+		{
+			case CMD_INSERT:
+				inserted = lappend_oid(inserted, r->key.relid);
+				break;
+			case CMD_UPDATE:
+				updated = lappend_oid(updated, r->key.relid);
+				break;
+			case CMD_DELETE:
+				deleted = lappend_oid(deleted, r->key.relid);
+				break;
+			default:
+				Assert(false);
+				break;
+		}
+	}
+
+	if (inserted != NIL)
+	{
+		send_subtag(&buf, EP_TAG_I, inserted);
+		pfree(inserted);
+	}
+
+	if (updated != NIL)
+	{
+		send_subtag(&buf, EP_TAG_U, updated);
+		pfree(updated);
+	}
+
+	if (deleted != NIL)
+	{
+		send_subtag(&buf, EP_TAG_D, deleted);
+		pfree(deleted);
+	}
+
+	pq_sendint32(&buf, EP_TAG_MAX); /* Finish this run. */
+	pq_endmessage(&buf);
+	pq_flush(); /* Flush to notify QD in time. */
+}
+
+/*
+ * send_subtag
+ * Send the data of subtag, the format is:
+ * 	subtag + length + data
+ * while length is the length of data followed.
+ */
+static void
+send_subtag(StringInfoData *buf, ExtendProtocolSubTag subtag, List *relids)
+{
+	bytea	*res;
+	int 	rlen;
+	char	*ptr;
+	int		rcount;
+	Oid		relid;
+	ListCell	*lc;
+
+	pq_sendint32(buf, subtag); /* subtag */
+
+	rcount = list_length(relids);
+	rlen = sizeof(int)/* count of relids */ + sizeof(Oid) * rcount;
+
+	pq_sendint32(buf, rlen); /* length */
+
+	res = palloc(rlen + VARHDRSZ);
+	ptr = VARDATA(res);
+
+	memcpy(ptr, &rcount, sizeof(int));
+	ptr += sizeof(int);
+
+	foreach(lc, relids)
+	{
+		relid = lfirst_oid(lc);
+		memcpy(ptr, &relid, sizeof(Oid));
+		ptr += sizeof(Oid);
+	}
+
+	SET_VARSIZE(res, rlen + VARHDRSZ);
+
+	pq_sendbytes(buf, VARDATA(res),	VARSIZE(res) - VARHDRSZ);
+}
+
+/*
+ * notify_modified_relations_local
+ * For SINGLENODE or we are entry db, update the modified relids on local.
+ * To keep consistent, we set the extend protocol data which will be processed
+ * uniformly later at the end of exetuor run.
+ */
+static void
+notify_modified_relations_local(ModifyTableState *node)
+{
+	Assert(epd);
+
+	HASH_SEQ_STATUS scan;
+	ModifiedLeafRelidsData *r;
+	List *inserted = NIL;
+	List *updated = NIL;
+	List *deleted = NIL;
+
+	hash_seq_init(&scan, node->modified_leaf_relids);
+
+	while ((r = (ModifiedLeafRelidsData *) hash_seq_search(&scan)) != NULL)
+	{
+		switch (r->key.cmd)
+		{
+			case CMD_INSERT:
+				inserted = lappend_oid(inserted, r->key.relid);
+				break;
+			case CMD_UPDATE:
+				updated = lappend_oid(updated, r->key.relid);
+				break;
+			case CMD_DELETE:
+				deleted = lappend_oid(deleted, r->key.relid);
+				break;
+			default:
+				Assert(false);
+				break;
+		}
+	}
+
+	if (inserted != NIL)
+	{
+		epd_add_subtag_data(EP_TAG_I, inserted);
+		pfree(inserted);
+	}
+
+	if (updated != NIL)
+	{
+		epd_add_subtag_data(EP_TAG_U, updated);
+		pfree(updated);
+	}
+
+	if (deleted != NIL)
+	{
+		epd_add_subtag_data(EP_TAG_D, deleted);
+		pfree(deleted);
+	}
+}
+
+/*
+ * epd_add_subtag_data
+ *
+ * Adds subtag data into the Extend Protocol Data structure directly.
+ * This function composes binary data using the provided subtag and modified relations,
+ * and stores the result in the epd's subtag data list. All memory allocations
+ * are performed under the TopTransactionContext to ensure proper memory management.
+ */
+static void
+epd_add_subtag_data(ExtendProtocolSubTag subtag, List *relids) 
+{
+	MemoryContext 	oldctx;
+	StringInfo		buf;
+	bytea	*res;
+	int 	rlen;
+	char	*ptr;
+	int		rcount;
+	Oid 	relid;
+	ListCell *lc;
+
+	rcount = list_length(relids);
+	rlen = sizeof(int) /* count of relids */ + sizeof(Oid) * rcount;
+	res = palloc(rlen + VARHDRSZ);
+	ptr = VARDATA(res);
+
+	memcpy(ptr, &rcount, sizeof(int));
+	ptr += sizeof(int);
+
+	foreach(lc, relids)
+	{
+		relid = lfirst_oid(lc);
+		memcpy(ptr, &relid, sizeof(Oid));
+		ptr += sizeof(Oid);
+	}
+
+	SET_VARSIZE(res, rlen + VARHDRSZ);
+
+	oldctx = MemoryContextSwitchTo(TopTransactionContext);
+	buf = makeStringInfo();
+	appendBinaryStringInfoNT(buf, VARDATA(res), VARSIZE(res) - VARHDRSZ);
+	epd->subtagdata[subtag] = lappend(epd->subtagdata[subtag], buf);
+	/* Mark subtag to be consumed. */
+	epd->consumed_bitmap |= 1 << subtag;
+
+	pfree(res);
+	MemoryContextSwitchTo(oldctx);
 }

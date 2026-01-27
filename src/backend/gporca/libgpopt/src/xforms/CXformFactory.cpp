@@ -243,11 +243,13 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp) CXformPushGbWithHavingBelowJoin(m_mp));
 	Add(GPOS_NEW(m_mp) CXformPushGbBelowUnion(m_mp));
 	Add(GPOS_NEW(m_mp) CXformPushGbBelowUnionAll(m_mp));
+	Add(GPOS_NEW(m_mp) CXformPushPartialAggBelowJoin(m_mp));
 	Add(GPOS_NEW(m_mp) CXformSplitGbAgg(m_mp));
 	Add(GPOS_NEW(m_mp) CXformSplitGbAggDedup(m_mp));
 	Add(GPOS_NEW(m_mp) CXformSplitDQA(m_mp));
 	Add(GPOS_NEW(m_mp) CXformSequenceProject2Apply(m_mp));
 	Add(GPOS_NEW(m_mp) CXformImplementSequenceProject(m_mp));
+	Add(GPOS_NEW(m_mp) CXformImplementHashSequenceProject(m_mp));
 	Add(GPOS_NEW(m_mp) CXformImplementAssert(m_mp));
 	Add(GPOS_NEW(m_mp) CXformCTEAnchor2Sequence(m_mp));
 	Add(GPOS_NEW(m_mp) CXformCTEAnchor2TrivialSelect(m_mp));
@@ -302,6 +304,7 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp) CXformLimit2IndexOnlyGet(m_mp));
 	Add(GPOS_NEW(m_mp) CXformFullOuterJoin2HashJoin(m_mp));
 	Add(GPOS_NEW(m_mp) CXformFullJoinCommutativity(m_mp));
+	Add(GPOS_NEW(m_mp) CXformSplitWindowFunc(m_mp));
 
 	GPOS_ASSERT(nullptr != m_rgpxf[CXform::ExfSentinel - 1] &&
 				"Not all xforms have been instantiated");

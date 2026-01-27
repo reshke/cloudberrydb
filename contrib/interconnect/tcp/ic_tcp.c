@@ -1283,7 +1283,6 @@ SetupTCPInterconnect(EState *estate)
 	/* we can have at most one of these. */
 	ChunkTransportStateEntry *sendingChunkTransportState = NULL;
 	ChunkTransportState *interconnect_context;
-	HASHCTL		conn_sent_record_typmod_ctl;
 
 	SIMPLE_FAULT_INJECTOR("interconnect_setup_palloc");
 	interconnect_context = palloc0(sizeof(ChunkTransportState));
@@ -1299,13 +1298,6 @@ SetupTCPInterconnect(EState *estate)
 	interconnect_context->incompleteConns = NIL;
 	interconnect_context->sliceTable = copyObject(sliceTable);
 	interconnect_context->sliceId = sliceTable->localSlice;
-
-	conn_sent_record_typmod_ctl.keysize = sizeof(MotionConnKey);
-	conn_sent_record_typmod_ctl.entrysize = sizeof(MotionConnSentRecordTypmodEnt);
-	conn_sent_record_typmod_ctl.hcxt = CurrentMemoryContext;
-
-	interconnect_context->conn_sent_record_typmod = hash_create(
-																"MotionConn sent record typmod mapping", 128, &conn_sent_record_typmod_ctl, HASH_CONTEXT | HASH_ELEM | HASH_BLOBS);
 
 #ifdef ENABLE_IC_PROXY
 	ic_proxy_backend_init_context(interconnect_context);
@@ -1903,6 +1895,22 @@ SetupTCPInterconnect(EState *estate)
 	estate->es_interconnect_is_setup = true;
 }								/* SetupTCPInterconnect */
 
+static void TeardownInterconnectTCPCallbck(ChunkTransportState *transportStates,
+										   bool hasErrors)
+{
+	PG_TRY();
+	{
+		TeardownTCPInterconnect(transportStates, hasErrors);
+	}
+	PG_CATCH();
+	{
+		char *error_message = elog_message();
+		elog(WARNING, "TeardownInterconnectTCPCallbck: failed to teardown interconnect, error: %s",
+			 error_message ? error_message : "unknown error");
+	}
+	PG_END_TRY();
+}
+
 void
 SetupInterconnectTCP(EState *estate)
 {
@@ -1918,7 +1926,7 @@ SetupInterconnectTCP(EState *estate)
 		elog(ERROR, "SetupInterconnectTCP: no slice table ?");
 	}
 
-	h = allocate_interconnect_handle(TeardownInterconnectTCP);
+	h = allocate_interconnect_handle(TeardownInterconnectTCPCallbck);
 
 	Assert(InterconnectContext != NULL);
 	oldContext = MemoryContextSwitchTo(InterconnectContext);
@@ -2177,8 +2185,6 @@ TeardownTCPInterconnect(ChunkTransportState * transportStates, bool hasErrors)
 
 	if (transportStates->states != NULL)
 		pfree(transportStates->states);
-	if (transportStates->conn_sent_record_typmod)
-		hash_destroy(transportStates->conn_sent_record_typmod);
 
 	pfree(transportStates);
 

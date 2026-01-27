@@ -1529,6 +1529,8 @@ exec_mpp_dtx_protocol_command(DtxProtocolCommand dtxProtocolCommand,
 	qc.commandTag = GetCommandTagEnum(loggingStr);
 	qc.nprocessed = 1;
 
+	SIMPLE_FAULT_INJECTOR("exec_dtx_protocol_start");
+
 	if (log_statement == LOGSTMT_ALL)
 		elog(LOG,"DTM protocol command '%s' for gid = %s", loggingStr, gid);
 
@@ -2165,8 +2167,30 @@ exec_parse_message(const char *query_string,	/* string to execute */
 			 * reader gang (cursors in Cloudberry must be executed by a reader gang).
 			 * For details please refer the mailing list:
 			 * https://groups.google.com/a/greenplum.org/forum/#!msg/gpdb-dev/ugsZca1qLXU/CtUmzEa7CAAJ
+			 *
+			 * For single node, we should not disable the locking optimization because single node
+			 * works like PostgreSQL.
 			 */
-			((SelectStmt *)raw_parse_tree->stmt)->disableLockingOptimization = true;
+			if (IS_SINGLENODE())
+				((SelectStmt *)raw_parse_tree->stmt)->disableLockingOptimization = false;
+			else if (enableLockOptimization)
+			{
+				SelectStmt *stmt = (SelectStmt *)raw_parse_tree->stmt;
+
+				/*
+				 * If GUC 'enableLockOptimization' is on, we try to optimize the lock for
+				 * select-for-update and similar queries.
+				 *
+				 * If the lock cannot be optimized, use the default way.
+				 */
+				stmt->disableLockingOptimization = false;
+				if (!checkCanOptSelectLockingClause(stmt))
+				{
+					((SelectStmt *)raw_parse_tree->stmt)->disableLockingOptimization = true;
+				}
+			}
+			else
+				((SelectStmt *)raw_parse_tree->stmt)->disableLockingOptimization = true;
 		}
 
 		/*
@@ -2465,6 +2489,26 @@ exec_bind_message(StringInfo input_message)
 		portal = CreatePortal(portal_name, false, false);
 
 	portal->is_extended_query = true;
+
+	/*
+	 * If GUC 'enableLockOptimization' is on, we try to optimize the lock for
+	 * select-for-update and similar queries.
+	 *
+	 * If the lock for query can be optimized, we use tuple lock instead of
+	 * relation lock to improve Concurrency Performance. LockRows is executed
+	 * on segment, but reader gangs cannot execute LockRows, so we need to
+	 * dispatch query plan to writer gangs, that's why we reset is_extended_query
+	 * to false here.
+	 */
+	if (enableLockOptimization && IsA(psrc->raw_parse_tree->stmt, SelectStmt))
+	{
+		SelectStmt *stmt = (SelectStmt *)psrc->raw_parse_tree->stmt;
+
+		if (checkCanOptSelectLockingClause(stmt))
+		{
+			portal->is_extended_query = false;
+		}
+	}
 
 	/*
 	 * Prepare to copy stuff into the portal's memory context.  We do all this
@@ -2966,6 +3010,45 @@ exec_execute_message(const char *portal_name, int64 max_rows)
 
 	if (max_rows <= 0)
 		max_rows = FETCH_ALL;
+
+	/*
+	 * If the lock for select-for-update and similar queries is optimized, we should
+	 * fetch all rows here.
+	 *
+	 * Since we optimize the lock for query, the query plan is dispatched to writer
+	 * gangs to execute. If we do not fetch all rows here, the writer gangs are occupied
+	 * and can not execute other query plans.
+	 */
+	if (enableLockOptimization)
+	{
+		CachedPlanSource *psrc;
+
+		if (portal->prepStmtName)
+		{
+			PreparedStatement *pstmt;
+
+			pstmt = FetchPreparedStatement(portal->prepStmtName, true);
+			psrc = pstmt->plansource;
+		}
+		else
+		{
+			/* special-case the unnamed statement */
+			psrc = unnamed_stmt_psrc;
+			if (!psrc)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_PSTATEMENT),
+						errmsg("unnamed prepared statement does not exist")));
+		}
+
+		if (IsA(psrc->raw_parse_tree->stmt, SelectStmt) &&
+			checkCanOptSelectLockingClause((SelectStmt *)psrc->raw_parse_tree->stmt) &&
+			max_rows != FETCH_ALL)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					errmsg("Should fetch all rows for query if lock optimization is enabled")));
+		}
+	}
 
 	completed = PortalRun(portal,
 						  max_rows,
@@ -5633,6 +5716,7 @@ PostgresMain(int argc, char *argv[],
 					const char *serializedQueryDispatchDesc = NULL;
 					const char *resgroupInfoBuf = NULL;
 
+					int is_hs_dispatch;
 					int query_string_len = 0;
 					int serializedDtxContextInfolen = 0;
 					int serializedPlantreelen = 0;
@@ -5669,6 +5753,20 @@ PostgresMain(int argc, char *argv[],
 					cuid = pq_getmsgint(&input_message, 4);
 
 					statementStart = pq_getmsgint64(&input_message);
+
+					/* check if the message is from standby QD and is expected */
+					is_hs_dispatch = pq_getmsgint(&input_message, 4);
+					if (is_hs_dispatch == 0 && IS_HOT_STANDBY_QE())
+						ereport(ERROR,
+								(errcode(ERRCODE_PROTOCOL_VIOLATION),
+								 errmsg("mirror segments can only process MPP protocol messages from standby QD"),
+								 errhint("Exit the current session and re-connect.")));
+					else if (is_hs_dispatch != 0 && !IS_HOT_STANDBY_QE())
+						ereport(ERROR,
+								(errcode(ERRCODE_PROTOCOL_VIOLATION),
+								 errmsg("primary segments can only process MPP protocol messages from primary QD"),
+								 errhint("Exit the current session and re-connect.")));
+
 					query_string_len = pq_getmsgint(&input_message, 4);
 					serializedPlantreelen = pq_getmsgint(&input_message, 4);
 					serializedQueryDispatchDesclen = pq_getmsgint(&input_message, 4);

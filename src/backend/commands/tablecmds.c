@@ -3988,7 +3988,7 @@ CheckRelationTableSpaceMove(Relation rel, Oid newTableSpaceId)
 void
 SetRelationTableSpace(Relation rel,
 					  Oid newTableSpaceId,
-					  RelFileNodeId newRelFileNode)
+					  Oid newRelFileNode)
 {
 	Relation	pg_class;
 	HeapTuple	tuple;
@@ -4518,6 +4518,10 @@ RenameRelation(RenameStmt *stmt)
 
 	/* Do the work */
 	RenameRelationInternal(relid, stmt->newname, false, is_index_stmt);
+
+	/* Try to Rename in gp_matview_aux too. */
+	if (stmt->renameType == OBJECT_MATVIEW)
+		mvaux_rename(relid, stmt->newname);
 
 	/*
 	 * if relation is a partitioned table, rename all children tables of it.
@@ -7556,12 +7560,8 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
-		if (newrel && RelationIsAoRows(newrel))
-			appendonly_dml_init(newrel, CMD_INSERT);
-		else if (newrel && RelationIsAoCols(newrel))
-			aoco_dml_init(newrel, CMD_INSERT);
-		else if (newrel && ext_dml_init_hook)
-			ext_dml_init_hook(newrel, CMD_INSERT);
+		if (newrel)
+			table_dml_init(newrel, CMD_INSERT);
 
 		/*
 		 * Switch to per-tuple memory context and reset it for each tuple
@@ -16401,7 +16401,7 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
 	Oid         relaovisimapidxid = InvalidOid;
 	Oid			relbmrelid = InvalidOid;
 	Oid			relbmidxid = InvalidOid;
-	RelFileNodeId newrelfilenode;
+	Oid newrelfilenode;
 	RelFileNode newrnode;
 	List	   *reltoastidxids = NIL;
 	ListCell   *lc;
@@ -21171,11 +21171,6 @@ ComputePartitionAttrs(ParseState *pstate, Relation rel, List *partParams, AttrNu
 							 errmsg("cannot use constant expression as partition key")));
 			}
 		}
-
-		if (strategy == PARTITION_STRATEGY_HASH && type_is_enum(atttype))
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot use ENUM column \"%s\" in PARTITION BY statement for hash partitions", pelem->name)));
 
 		/*
 		 * Apply collation override if any

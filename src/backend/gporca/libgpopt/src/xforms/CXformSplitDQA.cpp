@@ -62,9 +62,11 @@ CXformSplitDQA::CXformSplitDQA(CMemoryPool *mp)
 CXform::EXformPromise
 CXformSplitDQA::Exfp(CExpressionHandle &exprhdl) const
 {
+	CLogicalGbAgg *popGbAgg = CLogicalGbAgg::PopConvert(exprhdl.Pop());
 	// do not split aggregate if it is not a global aggregate,  has no distinct aggs, has MDQAs, has outer references,
 	// or return types of Agg functions are ambiguous
-	if (!CLogicalGbAgg::PopConvert(exprhdl.Pop())->FGlobal() ||
+	if (!popGbAgg->FGlobal() ||
+		popGbAgg->FAggPushdown() ||
 		0 == exprhdl.DeriveTotalDistinctAggs(1) ||
 		exprhdl.DeriveHasMultipleDistinctAggs(1) ||
 		0 < exprhdl.DeriveOuterReferences()->Size() ||
@@ -264,7 +266,7 @@ CXformSplitDQA::PexprSplitIntoLocalDQAGlobalAgg(
 				true /* is_distinct */, EaggfuncstageLocal /*eaggfuncstage*/,
 				true /* fSplit */, nullptr /* pmdidResolvedReturnType */,
 				EaggfunckindNormal, popScAggFunc->GetArgTypes(),
-				popScAggFunc->FRepSafe());
+				popScAggFunc->FRepSafe(), popScAggFunc->IsAggStar());
 
 			// CScalarValuesList
 			CExpression *pexprArg = (*(*pexprAggFunc)[0])[0];
@@ -310,7 +312,7 @@ CXformSplitDQA::PexprSplitIntoLocalDQAGlobalAgg(
 				false /* is_distinct */, EaggfuncstageGlobal /*eaggfuncstage*/,
 				true /* fSplit */, nullptr /* pmdidResolvedReturnType */,
 				EaggfunckindNormal, popScAggFunc->GetArgTypes(),
-				popScAggFunc->FRepSafe());
+				popScAggFunc->FRepSafe(), popScAggFunc->IsAggStar());
 
 			CExpressionArray *pdrgpexprArgsGlobal =
 				GPOS_NEW(mp) CExpressionArray(mp);
@@ -425,7 +427,7 @@ CXformSplitDQA::PexprSplitHelper(CMemoryPool *mp, CColumnFactory *col_factory,
 				false /* is_distinct */, EaggfuncstageGlobal /*eaggfuncstage*/,
 				false /* fSplit */, nullptr /* pmdidResolvedReturnType */,
 				EaggfunckindNormal, popScAggFunc->GetArgTypes(),
-				popScAggFunc->FRepSafe());
+				popScAggFunc->FRepSafe(), popScAggFunc->IsAggStar());
 
 			CExpressionArray *pdrgpexprChildren =
 				GPOS_NEW(mp) CExpressionArray(mp);
@@ -565,7 +567,7 @@ CXformSplitDQA::PexprPrElAgg(CMemoryPool *mp, CExpression *pexprAggFunc,
 		false, /*fdistinct */
 		eaggfuncstage, true /* fSplit */, nullptr /* pmdidResolvedReturnType */,
 		EaggfunckindNormal, popScAggFunc->GetArgTypes(),
-		popScAggFunc->FRepSafe());
+		popScAggFunc->FRepSafe(), popScAggFunc->IsAggStar());
 
 	return CUtils::PexprScalarProjectElement(
 		mp, pcrCurrStage,

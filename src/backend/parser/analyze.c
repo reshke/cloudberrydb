@@ -70,6 +70,14 @@
 #include "parser/parse_func.h"
 #include "utils/lsyscache.h"
 
+/*
+ * GUC parameter
+ *
+ * Enable locking optimization for extended query protocol to avoid
+ * ExclusiveLock in case of select-for-update and similar queries.
+ */
+bool enableLockOptimization = false;
+
 /* Working state for transformSetOperationTree_internal */
 typedef struct
 {
@@ -132,7 +140,6 @@ static bool test_raw_expression_coverage(Node *node, void *context);
 static int get_distkey_by_name(char *key, IntoClause *into, Query *qry, bool *found);
 static void setQryDistributionPolicy(ParseState *pstate, IntoClause *into, Query *qry);
 
-static bool checkCanOptSelectLockingClause(SelectStmt *stmt);
 static bool queryNodeSearch(Node *node, void *context);
 static void sanity_check_on_conflict_update_set_distkey(GpPolicy  *policy, List *onconflict_set);
 static void sanity_check_on_conflict_update(Oid relid, List *on_conflict_set, Node *on_conflict_where);
@@ -333,6 +340,33 @@ transformOptionalSelectInto(ParseState *pstate, Node *parseTree)
 			stmt->intoClause = NULL;
 
 			parseTree = (Node *) ctas;
+
+			if (stmt->withClause)
+			{
+				ListCell   *lc;
+				foreach(lc, stmt->withClause->ctes)
+				{
+					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+					if (!IsA(cte->ctequery, SelectStmt))
+					{
+						/* must be a data-modifying statement */
+						Assert(IsA(cte->ctequery, InsertStmt) ||
+							   IsA(cte->ctequery, UpdateStmt) ||
+							   IsA(cte->ctequery, DeleteStmt));
+
+						/*
+						 * Since Cloudberry currently only support a single writer gang, only one
+						 * writable clause is permitted per CTE. Once we get flexible gangs
+						 * with more than one writer gang we can lift this restriction.
+						 */
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("writable CTE queries cannot be used with writable queries"),
+								 errdetail("Apache Cloudberry currently only support CTEs with one writable clause, called in a non-writable context."),
+								 errhint("Rewrite the query to only include one writable clause.")));
+					}
+				}
+			}
 		}
 	}
 
@@ -4080,7 +4114,7 @@ setQryDistributionPolicy(ParseState *pstate, IntoClause *into, Query *qry)
  * can behave like Postgres. We have to know it before
  * we acquire any locks on the tables.
  */
-static bool
+bool
 checkCanOptSelectLockingClause(SelectStmt *stmt)
 {
 	QueryNodeSearchContext ctx = {false};

@@ -96,6 +96,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenWindowOids, GPOS_WSZ_LIT("WindowOids")},
 		{EdxltokenOidRowNumber, GPOS_WSZ_LIT("RowNumber")},
 		{EdxltokenOidRank, GPOS_WSZ_LIT("Rank")},
+		{EdxltokenOidDenseRank, GPOS_WSZ_LIT("DenseRank")},
 
 		{EdxltokenPlanSamples, GPOS_WSZ_LIT("PlanSamples")},
 
@@ -171,6 +172,8 @@ CDXLTokens::Init(CMemoryPool *mp)
 
 		{EdxltokenDuplicateSensitive, GPOS_WSZ_LIT("DuplicateSensitive")},
 
+		{EdxltokenPartIndexId, GPOS_WSZ_LIT("PartIndexId")},
+		{EdxltokenPartIndexIdPrintable, GPOS_WSZ_LIT("PrintablePartIndexId")},
 		{EdxltokenSegmentIdCol, GPOS_WSZ_LIT("SegmentIdCol")},
 
 		{EdxltokenScalar, GPOS_WSZ_LIT("Scalar")},
@@ -340,6 +343,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenWindowFrame, GPOS_WSZ_LIT("WindowFrame")},
 		{EdxltokenWindowKeyList, GPOS_WSZ_LIT("WindowKeyList")},
 		{EdxltokenWindowKey, GPOS_WSZ_LIT("WindowKey")},
+		{EdxltokenWindowHashAgg, GPOS_WSZ_LIT("IsWindowHashAgg")},
 
 		{EdxltokenWindowSpecList, GPOS_WSZ_LIT("WindowSpecList")},
 		{EdxltokenWindowSpec, GPOS_WSZ_LIT("WindowSpec")},
@@ -363,6 +367,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 
 		{EdxltokenAggrefOid, GPOS_WSZ_LIT("AggMdid")},
 		{EdxltokenAggrefDistinct, GPOS_WSZ_LIT("AggDistinct")},
+		{EdxltokenAggrefIsAggStar, GPOS_WSZ_LIT("AggStar")},
 		{EdxltokenAggrefArgTypes, GPOS_WSZ_LIT("AggArgTypes")},
 		{EdxltokenAggrefKind, GPOS_WSZ_LIT("AggKind")},
 		{EdxltokenAggrefStage, GPOS_WSZ_LIT("AggStage")},
@@ -398,6 +403,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 
 		{EdxltokenColDescr, GPOS_WSZ_LIT("Column")},
 		{EdxltokenColRef, GPOS_WSZ_LIT("ColRef")},
+		{EdxltokenColIdxmap, GPOS_WSZ_LIT("ColIdxMap")},
 
 		{EdxltokenColumns, GPOS_WSZ_LIT("Columns")},
 		{EdxltokenColumn, GPOS_WSZ_LIT("Column")},
@@ -411,6 +417,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenColNdvRemain, GPOS_WSZ_LIT("NdvRemain")},
 		{EdxltokenColFreqRemain, GPOS_WSZ_LIT("FreqRemain")},
 		{EdxltokenColStatsMissing, GPOS_WSZ_LIT("ColStatsMissing")},
+		{EdxltokenColNdvBySeg, GPOS_WSZ_LIT("NdvBySeg")},
 
 		{EdxltokenParamId, GPOS_WSZ_LIT("ParamId")},
 
@@ -550,8 +557,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		 GPOS_WSZ_LIT("AppendOnly, Column-oriented")},
 		{EdxltokenRelStorageAppendOnlyRows,
 		 GPOS_WSZ_LIT("AppendOnly, Row-oriented")},
-		{EdxltokenRelStoragePAX,
-		 GPOS_WSZ_LIT("PAX")},
+		{EdxltokenRelStoragePAX, GPOS_WSZ_LIT("PAX")},
 		{EdxltokenRelStorageMixedPartitioned, GPOS_WSZ_LIT("MixedPartitioned")},
 		{EdxltokenRelStorageForeign, GPOS_WSZ_LIT("Foreign")},
 		{EdxltokenRelStorageCompositeType, GPOS_WSZ_LIT("Composite")},

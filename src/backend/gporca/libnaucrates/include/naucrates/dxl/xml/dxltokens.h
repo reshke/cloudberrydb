@@ -76,6 +76,7 @@ enum Edxltoken
 	EdxltokenWindowOids,
 	EdxltokenOidRowNumber,
 	EdxltokenOidRank,
+	EdxltokenOidDenseRank,
 
 	EdxltokenPlanSamples,
 
@@ -131,6 +132,8 @@ enum Edxltoken
 
 	EdxltokenDuplicateSensitive,
 
+	EdxltokenPartIndexId,
+	EdxltokenPartIndexIdPrintable,
 	EdxltokenSegmentIdCol,
 
 	EdxltokenScalar,
@@ -234,6 +237,7 @@ enum Edxltoken
 	EdxltokenScalarWindowFrameTrailingEdge,
 	EdxltokenWindowKeyList,
 	EdxltokenWindowKey,
+	EdxltokenWindowHashAgg,
 
 	EdxltokenWindowSpecList,
 	EdxltokenWindowSpec,
@@ -315,6 +319,7 @@ enum Edxltoken
 
 	EdxltokenAggrefOid,
 	EdxltokenAggrefDistinct,
+	EdxltokenAggrefIsAggStar,
 	EdxltokenAggrefArgTypes,
 	EdxltokenAggrefKind,
 	EdxltokenAggrefStage,
@@ -352,6 +357,7 @@ enum Edxltoken
 
 	EdxltokenColDescr,
 	EdxltokenColRef,
+	EdxltokenColIdxmap,
 
 	EdxltokenColumns,
 	EdxltokenColumn,
@@ -365,6 +371,7 @@ enum Edxltoken
 	EdxltokenColNdvRemain,
 	EdxltokenColFreqRemain,
 	EdxltokenColStatsMissing,
+	EdxltokenColNdvBySeg,
 
 	EdxltokenParamId,
 

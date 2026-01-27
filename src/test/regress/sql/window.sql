@@ -1,6 +1,10 @@
 -- TODO: incremental sort is turned off by default, because it may have
 -- wrong result for some core case. Turn it on to run the existing tests
 -- and minimize the difference from upstream.
+-- start_matchignore
+-- m/INFO:  GPORCA failed to produce a plan, falling back to Postgres-based planner/
+-- m/DETAIL:  Falling back to Postgres-based planner because GPORCA does not support the following feature: Non-default collation/
+-- end_matchignore
 set enable_incremental_sort=on;
 
 --
@@ -79,6 +83,48 @@ SELECT lead(ten * 2, 1, -1) OVER (PARTITION BY four ORDER BY ten), ten, four FRO
 SELECT lead(ten * 2, 1, -1.4) OVER (PARTITION BY four ORDER BY ten), ten, four FROM tenk1 WHERE unique2 < 10 ORDER BY four, ten;
 
 SELECT first_value(ten) OVER (PARTITION BY four ORDER BY ten), ten, four FROM tenk1 WHERE unique2 < 10;
+
+-- test split window func
+
+explain SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+explain SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+explain SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+explain SELECT * FROM (SELECT percent_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 0.5;
+set optimizer_force_split_window_function to on;
+-- worked
+explain SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+explain SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+explain SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+
+explain SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+explain SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+explain SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+
+-- no worked
+explain SELECT * FROM (SELECT cume_dist() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 1;
+explain SELECT * FROM (SELECT percent_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 0.5;
+explain SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 > 1;
+explain SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 > 1;
+explain SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 > 1;
+
+-- verify the split window function result
+set optimizer_force_split_window_function to off;
+SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+
+SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+set optimizer_force_split_window_function to on;
+SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 < 3;
+
+SELECT * FROM (SELECT rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+SELECT * FROM (SELECT row_number() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+SELECT * FROM (SELECT dense_rank() OVER (PARTITION BY four ORDER BY ten) AS rank_1, ten, four FROM tenk1 WHERE unique2 < 10) t WHERE rank_1 <= 3;
+reset optimizer_force_split_window_function;
 
 -- last_value returns the last row of the frame, which is CURRENT ROW in ORDER BY window.
 -- the column `ten` is ordered, so we should call last_value on this
@@ -196,63 +242,63 @@ SELECT sum(unique1) over (order by four range between current row and unbounded 
 FROM tenk1 WHERE unique1 < 10;
 
 set search_path=singleseg, public;
-SELECT sum(unique1) over (rows between current row and unbounded following),
+SELECT sum(unique1) over (order by unique1 rows between current row and unbounded following),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between 2 preceding and 2 following),
+SELECT sum(unique1) over (order by unique1 rows between 2 preceding and 2 following),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between 2 preceding and 2 following exclude no others),
+SELECT sum(unique1) over (order by unique1 rows between 2 preceding and 2 following exclude no others),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between 2 preceding and 2 following exclude current row),
+SELECT sum(unique1) over (order by unique1 rows between 2 preceding and 2 following exclude current row),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between 2 preceding and 2 following exclude group),
+SELECT sum(unique1) over (order by unique1 rows between 2 preceding and 2 following exclude group),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between 2 preceding and 2 following exclude ties),
+SELECT sum(unique1) over (order by unique1 rows between 2 preceding and 2 following exclude ties),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT first_value(unique1) over (ORDER BY four rows between current row and 2 following exclude current row),
+SELECT first_value(unique1) over (ORDER BY four, unique1 rows between current row and 2 following exclude current row),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT first_value(unique1) over (ORDER BY four rows between current row and 2 following exclude group),
+SELECT first_value(unique1) over (ORDER BY four, unique1 rows between current row and 2 following exclude group),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT first_value(unique1) over (ORDER BY four rows between current row and 2 following exclude ties),
+SELECT first_value(unique1) over (ORDER BY four, unique1 rows between current row and 2 following exclude ties),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT last_value(unique1) over (ORDER BY four rows between current row and 2 following exclude current row),
+SELECT last_value(unique1) over (ORDER BY four, unique1 rows between current row and 2 following exclude current row),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT last_value(unique1) over (ORDER BY four rows between current row and 2 following exclude group),
+SELECT last_value(unique1) over (ORDER BY four, unique1 rows between current row and 2 following exclude group),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT last_value(unique1) over (ORDER BY four rows between current row and 2 following exclude ties),
+SELECT last_value(unique1) over (ORDER BY four, unique1 rows between current row and 2 following exclude ties),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between 2 preceding and 1 preceding),
+SELECT sum(unique1) over (order by unique1 rows between 2 preceding and 1 preceding),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between 1 following and 3 following),
+SELECT sum(unique1) over (order by unique1 rows between 1 following and 3 following),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
-SELECT sum(unique1) over (rows between unbounded preceding and 1 following),
+SELECT sum(unique1) over (order by unique1 rows between unbounded preceding and 1 following),
 	unique1, four
 FROM tenk1 WHERE unique1 < 10;
 
@@ -276,7 +322,7 @@ SELECT first_value(unique1) over w,
 	nth_value(unique1, 2) over w AS nth_2,
 	last_value(unique1) over w, unique1, four
 FROM tenk1 WHERE unique1 < 10
-WINDOW w AS (order by four range between current row and unbounded following);
+WINDOW w AS (order by unique1, four range between current row and unbounded following);
 
 SELECT sum(unique1) over
 	(order by unique1

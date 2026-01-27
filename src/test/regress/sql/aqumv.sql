@@ -809,7 +809,7 @@ create materialized view mv_par1 as select   count(*) from par_1_prt_1;
 create materialized view mv_par1_1 as select count(*) from par_1_prt_1_2_prt_1;
 create materialized view mv_par1_2 as select count(*) from par_1_prt_1_2_prt_2;
 create materialized view mv_par2 as select   count(*) from par_1_prt_2;
-create materialized view mv_par2_2 as select count(*) from par_1_prt_2_2_prt_1;
+create materialized view mv_par2_1 as select count(*) from par_1_prt_2_2_prt_1;
 create materialized view mv_par_prune as select count(*) from par where b = 1;
 set enable_answer_query_using_materialized_views = on;
 
@@ -829,6 +829,150 @@ reset enable_partition_pruning;
 --
 -- End of test partitioned tables
 --
+
+begin;
+insert into par values(1, 1, 1), (1, 1, 2);
+explain(costs off, verbose)
+select count(*) from par_1_prt_2;
+
+insert into par_1_prt_1_2_prt_1 values (1, 1, 1);
+explain(costs off, verbose)
+select count(*) from par_1_prt_2;
+
+delete from par_1_prt_1_2_prt_1;
+explain(costs off, verbose)
+select count(*) from par_1_prt_2;
+
+update par set c = 2 where b = 1 and c = 1;
+explain(costs off, verbose)
+select count(*) from par_1_prt_2;
+
+update par set c = 2, a = 2 where  b = 1 and c = 1;
+explain(costs off, verbose)
+select count(*) from par_1_prt_2;
+abort;
+
+-- Test INSERT SELECT
+begin; 
+create table t_insert(a int);
+create table t_select(a int);
+insert into t_select select i from generate_series(1, 1000) i;
+analyze t_insert;
+create materialized view mv_insert_select as
+select count(a) from t_select;
+analyze mv_insert_select;
+
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose) insert into t_insert select count(a) from t_select;
+insert into t_insert select count(a) from t_select;
+select * from t_insert;
+truncate t_insert;
+
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose) insert into t_insert select count(a) from t_select;
+insert into t_insert select count(a) from t_select;
+select * from t_insert;
+abort;
+
+-- Test view has Group By
+begin;
+create table t0 as select i as a, i+1 as b , i+2 as c, i+3 as d from generate_series(1, 5) i;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+insert into t0 select * from t0;
+analyze t0;
+create materialized view mv_group_0 as select c, b, sum(a), count(b) from t0 group by b, c;
+create materialized view mv_group_1 as select c, b, count(b) from t0 where a > 3 group by c, b;
+analyze mv_group_0;
+analyze mv_group_1;
+
+-- no qual, exactly match
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select c, b, sum(a), count(b) from t0 group by b, c;
+select c, b, sum(a), count(b) from t0 group by b, c;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select c, b, sum(a), count(b) from t0 group by b, c;
+select c, b, sum(a), count(b) from t0 group by b, c;
+
+-- no qual, different order
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select b, sum(a), c, count(b) from t0 group by c, b;
+select b, sum(a), c, count(b) from t0 group by c, b;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select b, sum(a), c, count(b) from t0 group by c, b;
+select b, sum(a), c, count(b) from t0 group by c, b;
+
+-- no qual, different expr
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select b + c + 1, sum(a) + count(b) from t0 group by c, b;
+select b + c + 1, sum(a) + count(b) from t0 group by c, b;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select b + c + 1, sum(a) + count(b) from t0 group by c, b;
+select b + c + 1, sum(a) + count(b) from t0 group by c, b;
+
+-- no qual, should not match 
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select c, count(b) from t0 group by c ;
+select c, count(b) from t0 group by c ;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select c, count(b) from t0 group by c ;
+select c, count(b) from t0 group by c ;
+
+-- with qual, exactly match
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select c, b, count(b) from t0 where a > 3 group by c, b;
+select c, b, count(b) from t0 where a > 3 group by c, b;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select c, b, count(b) from t0 where a > 3 group by c, b;
+select c, b, count(b) from t0 where a > 3 group by c, b;
+
+-- with qual, different order
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select count(b), b, c from t0 where a > 3 group by b, c;
+select count(b), b, c from t0 where a > 3 group by b, c;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select count(b), b, c from t0 where a > 3 group by b, c;
+select count(b), b, c from t0 where a > 3 group by b, c;
+
+-- with qual, different expr
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select count(b) + 1, b + 1, c from t0 where a > 3 group by b, c;
+select count(b) + 1, b + 1, c from t0 where a > 3 group by b, c;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select count(b) + 1, b + 1, c from t0 where a > 3 group by b, c;
+select count(b) + 1, b + 1, c from t0 where a > 3 group by b, c;
+
+-- with qual, should not match
+set local enable_answer_query_using_materialized_views = off;
+explain(costs off, verbose)
+select b, c, count(b) from t0 where a > 3 and b > 1 group by b, c;
+select b, c, count(b) from t0 where a > 3 and b > 1 group by b, c;
+set local enable_answer_query_using_materialized_views = on;
+explain(costs off, verbose)
+select b, c, count(b) from t0 where a > 3 and b > 1 group by b, c;
+select b, c, count(b) from t0 where a > 3 and b > 1 group by b, c;
+
+abort;
 
 reset optimizer;
 reset enable_answer_query_using_materialized_views;

@@ -134,11 +134,14 @@ static void show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 							 List *ancestors, ExplainState *es);
 static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_windowagg_keys(WindowAggState *waggstate, List *ancestors, ExplainState *es);
+static void show_aggref_info(List *targetList, const char *qlabel, ExplainState *es);
 static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
 static void show_runtime_filter_info(RuntimeFilterState *rfstate,
 									 ExplainState *es);
+static void show_pushdown_runtime_filter_info(PlanState *planstate,
+											  ExplainState *es);
 static void show_memoize_info(MemoizeState *mstate, List *ancestors,
 							  ExplainState *es);
 static void show_hashagg_info(AggState *hashstate, ExplainState *es);
@@ -2495,6 +2498,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			/* fall through to print additional fields the same as SeqScan */
 			/* FALLTHROUGH */
 		case T_SeqScan:
+			if (gp_enable_runtime_filter_pushdown && IsA(planstate, SeqScanState))
+				show_pushdown_runtime_filter_info(planstate, es);
+			/* FALLTHROUGH */
 		case T_DynamicSeqScan:
 		case T_ValuesScan:
 		case T_CteScan:
@@ -2502,6 +2508,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_WorkTableScan:
 		case T_SubqueryScan:
 			if (IsA(plan, DynamicSeqScan)) {
+				if (gp_enable_runtime_filter_pushdown)
+					show_pushdown_runtime_filter_info(planstate, es);
+
 				char *buf;
 				Oid relid;
 				relid = rt_fetch(((DynamicSeqScan *)plan)
@@ -2730,6 +2739,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		case T_Agg:
 			show_agg_keys(castNode(AggState, planstate), ancestors, es);
 			show_upper_qual(plan->qual, "Filter", planstate, ancestors, es);
+			show_aggref_info(plan->targetlist, "AggRefs(TargetList)", es);
 			show_hashagg_info((AggState *) planstate, es);
 			if (plan->qual)
 				show_instrumentation_count("Rows Removed by Filter", 1,
@@ -3159,6 +3169,44 @@ show_sort_keys(SortState *sortstate, List *ancestors, ExplainState *es)
 						 plan->sortOperators, plan->collations,
 						 plan->nullsFirst,
 						 ancestors, es);
+}
+
+static void
+show_aggref_info(List *targetList, const char *qlabel, ExplainState *es) {
+	StringInfoData buf;
+	ListCell *lc;
+	bool already_got_one = false;
+
+	if (!Debug_print_aggref_in_explain) {
+		return;
+	}
+
+	initStringInfo(&buf);
+	appendStringInfoString(&buf, "[");
+
+	foreach (lc, targetList)
+	{
+		if (!IsA(lfirst(lc),TargetEntry)) {
+			continue;
+		}
+
+		TargetEntry *te = (TargetEntry *) lfirst(lc);
+		if (!IsA(te->expr, Aggref))
+		{
+			continue;
+		}
+
+		Aggref *aggref = (Aggref *) te->expr;
+		if (already_got_one) {
+			appendStringInfo(&buf, ", (%d, %d)", aggref->aggno, aggref->aggtransno);
+		} else {
+			appendStringInfo(&buf, "(%d, %d)", aggref->aggno, aggref->aggtransno);
+			already_got_one = true;
+		}
+	}
+	appendStringInfoString(&buf, "]");
+	
+	ExplainPropertyText(qlabel, buf.data, es);
 }
 
 static void
@@ -4259,7 +4307,7 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 	}
 
 	/* Display stats for each parallel worker */
-	if (es->analyze && aggstate->shared_info != NULL)
+	if (aggstate->shared_info != NULL)
 	{
 		for (int n = 0; n < aggstate->shared_info->num_workers; n++)
 		{
@@ -4362,6 +4410,26 @@ show_instrumentation_count(const char *qlabel, int which,
 			ExplainPropertyFloat(qlabel, NULL, nfiltered / nloops, 0, es);
 		else
 			ExplainPropertyFloat(qlabel, NULL, 0.0, 0, es);
+	}
+}
+
+/*
+ * If it's EXPLAIN ANALYZE, show instrumentation information with pushdown
+ * runtime filter.
+ */
+static void
+show_pushdown_runtime_filter_info(PlanState *planstate, ExplainState *es)
+{
+	Assert(gp_enable_runtime_filter_pushdown && 
+		   (IsA(planstate, SeqScanState) || IsA(planstate, DynamicSeqScanState)));
+
+	if (!es->analyze || !planstate->instrument)
+		return;
+
+	if (planstate->instrument->prf_work)
+	{
+		ExplainPropertyFloat("Rows Removed by Pushdown Runtime Filter",
+							 NULL, planstate->instrument->nfilteredPRF, 0, es);
 	}
 }
 

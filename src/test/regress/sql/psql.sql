@@ -477,6 +477,7 @@ CREATE MATERIALIZED VIEW mat_view_heap_psql USING heap_psql AS SELECT f1 from tb
 \set HIDE_TABLEAM off
 \d+ tbl_heap_psql
 \d+ tbl_heap
+\dit+ tbl_heap
 -- AM is displayed for tables, indexes and materialized views.
 \d+
 \dt+
@@ -1216,13 +1217,21 @@ drop role regress_partitioning_role;
 \d pg_toast.pg_toast_2619
 
 -- check printing info about access methods
+-- start_ignore
 \dA
 \dA *
+-- end_ignore
+-- CBDB: ignore pax AM
+\dA [^p]*
 \dA h*
 \dA foo
 \dA foo bar
+-- start_ignore
 \dA+
 \dA+ *
+-- end_ignore
+-- CBDB: ignore pax AM
+\dA+ [^p]*
 \dA+ h*
 \dA+ foo
 \dAc brin pg*.oid*

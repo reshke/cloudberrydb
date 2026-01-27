@@ -20,7 +20,7 @@ m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 dnl The PACKAGE_VERSION from upstream PostgreSQL is maintained in the
 dnl PG_PACKAGE_VERSION variable, when merging make sure to update this
 dnl variable with the merge conflict from the AC_INIT() statement.
-AC_INIT([Apache Cloudberry], [1.0.0], [dev@cloudberry.apache.org], [], [https://cloudberry.apache.org/])
+AC_INIT([Apache Cloudberry], [3.0.0-devel], [dev@cloudberry.apache.org], [], [https://cloudberry.apache.org/])
 [PG_PACKAGE_VERSION=14.4]
 AC_SUBST(PG_PACKAGE_VERSION)
 
@@ -31,6 +31,7 @@ dnl your responsibility whether the result works or not.])])
 AC_COPYRIGHT([Copyright (c) 1996-2021, PostgreSQL Global Development Group])
 AC_CONFIG_SRCDIR([src/backend/access/common/heaptuple.c])
 AC_CONFIG_AUX_DIR(config)
+m4_include([config/ax_compare_version.m4])
 AC_PREFIX_DEFAULT(/usr/local/cbdb)
 AC_SUBST(configure_args, [$ac_configure_args])
 AC_DEFINE_UNQUOTED(CONFIGURE_ARGS, ["$ac_configure_args"], [Saved arguments from configure])
@@ -848,6 +849,15 @@ AC_MSG_RESULT([checking whether to build with catalog extension... $enable_catal
 AC_SUBST(enable_catalog_ext)
 
 #
+# --enable-serverless uses serverless mode of Cloudberry
+#
+PGAC_ARG_BOOL(enable, serverless, no, [use serverless mode of Cloudberry],
+              [AC_DEFINE([SERVERLESS], 1,
+                                    [Define to 1 to use serverless mode of Cloudberry. (--enable-serverless)])])
+AC_MSG_RESULT([checking whether to use serverless mode of Cloudberry... $enable_serverless])
+AC_SUBST(enable_serverless)
+
+#
 # --enable-mapreduce enables GPMapreduce support
 #
 PGAC_ARG_BOOL(enable, mapreduce, no, [enable Cloudberry Mapreduce support],
@@ -861,7 +871,7 @@ AC_SUBST(enable_mapreduce)
 #
 PGAC_ARG_BOOL(enable, shared-postgres-backend, yes, [enable Cloudberry shared postgres backend support],
               [AC_DEFINE([USE_SHARED_POSTGRES_BACKEND], 1,
-			             [Define to 1 to build with shared postgres backend capabilities (--enable-shared-postgres-backend)])])
+			             [Define to 1 to build with shared Cloudberry backend capabilities (--enable-shared-postgres-backend)])])
 AC_MSG_RESULT([checking whether to build with Cloudberry shared postgres backend... $enable_shared_postgres_backend])
 AC_SUBST(enable_shared_postgres_backend)
 
@@ -870,6 +880,22 @@ AS_IF([test "$enable_shared_postgres_backend" = yes ],
   CFLAGS="$CFLAGS -fPIC "
   CXXFLAGS="$CXXFLAGS -fPIC "
 ]) # fi
+
+#
+# --enable-link-postgres-with-shared enables linking postgres with shared library libpostgres.so
+#
+PGAC_ARG_BOOL(enable, link-postgres-with-shared, no, [build Cloudberry using the shared library libpostgres.so],
+              [AC_DEFINE([USE_LINK_POSTGRES_WITH_SHARED], 1,
+			             [Define to 1 to build Cloudberry using the shared library libpostgres.so (--enable-link-postgres-with-shared)])])
+AC_MSG_RESULT([checking whether to build Cloudberry using the shared library libpostgres.so... $enable_link_postgres_with_shared])
+AC_SUBST(enable_link_postgres_with_shared)
+
+# check if enable-shared-postgres-backend is yes when enable-link-postgres-with-shared is yes
+if test "$enable_link_postgres_with_shared" = yes; then
+  if test "$enable_shared_postgres_backend" = no; then
+    AC_MSG_ERROR([--enable-link-postgres-with-shared is yes, but --enable-shared-postgres-backend is no])
+  fi
+fi
 
 #
 # gpcloud, enabled by default
@@ -893,9 +919,19 @@ AC_MSG_RESULT([checking whether to build with external-fts... $enable_external_f
 AC_SUBST(enable_external_fts)
 
 if test "$enable_external_fts" = no; then
-  AC_DEFINE([USE_INTERNAL_FTS], [1])
+  AC_DEFINE([USE_INTERNAL_FTS], [1], [Define to 1 to use the internal FTS implementation.])
   CFLAGS="$CFLAGS -DUSE_INTERNAL_FTS=1"
 fi
+
+#
+# ic-udp2
+#
+PGAC_ARG_BOOL(enable, ic-udp2, no,
+              [enable interconnect udp2 implement],
+              [AC_DEFINE(ENABLE_IC_UDP2, 1,
+                         [Define to 1 to build with interconnect udp2 support (--enable-ic-udp2)])])
+AC_MSG_RESULT([checking whether to build with interconnect udp2 support ... $enable_ic_udp2])
+AC_SUBST(enable_ic_udp2)
 
 #
 # ic-proxy
@@ -915,6 +951,53 @@ PGAC_ARG_BOOL(enable, preload-ic-module, yes,
                          [Define to 1 to preload with ic module])])
 AC_MSG_RESULT([checking whether to build with preload ic module ... $enable_preload_ic_module])
 AC_SUBST(enable_preload_ic_module)
+
+#
+# pax support
+#
+PGAC_ARG_BOOL(enable, pax, no,
+              [enable PAX support],
+              [AC_DEFINE(USE_PAX_STORAGE, 1,
+                         [Define to 1 to support PAX])])
+if test "$enable_pax" = yes; then
+  # Check protobuf >= 3.5.0
+  PKG_CHECK_MODULES([PROTOBUF], [protobuf >= 3.5.0],
+    [AC_DEFINE([HAVE_PROTOBUF], [1], [Define if protobuf is available])],
+    [AC_MSG_ERROR([protobuf >= 3.5.0 is required for PAX support])]
+  )
+
+  # Check libzstd >= 1.4.0
+  PKG_CHECK_MODULES([ZSTD], [libzstd >= 1.4.0],
+    [AC_DEFINE([HAVE_ZSTD], [1], [Define if zstd is available])],
+    [AC_MSG_ERROR([libzstd >= 1.4.0 is required for PAX support])]
+  )
+
+  # Check liburing
+  AC_CHECK_LIB(uring, io_uring_queue_init, [],
+               [AC_MSG_ERROR([library 'uring' is required for PAX support])])
+
+  # Check cmake >= 3.11.0 using AX_COMPARE_VERSION
+  AC_PATH_PROG([CMAKE], [cmake], [no])
+  if test "$CMAKE" = "no"; then
+    AC_MSG_ERROR([cmake is required for PAX support but was not found in PATH])
+  fi
+
+  AC_MSG_CHECKING([CMake version])
+  CMAKE_VERSION=`$CMAKE --version | head -n1 | sed 's/[^0-9]*\([0-9][0-9.]*\).*/\1/'`
+  AC_MSG_RESULT([$CMAKE_VERSION])
+
+  AX_COMPARE_VERSION([$CMAKE_VERSION], [ge], [3.11.0],
+    [],
+    [AC_MSG_ERROR([cmake >= 3.11.0 is required for PAX support])]
+  )
+
+  # All checks passed
+  AC_MSG_RESULT([checking whether to build with PAX support ... yes])
+else
+  # Explicitly disabled
+  AC_MSG_RESULT([checking whether to build with PAX support ... no])
+fi
+AC_SUBST(enable_pax)
 
 #
 # Include directories
@@ -1008,6 +1091,25 @@ AC_SUBST(with_python)
 AC_MSG_CHECKING([whether to build Python modules for gpMgmt])
 PGAC_ARG_BOOL(with, pythonsrc-ext, no, [build Python modules for gpMgmt])
 AC_MSG_RESULT([$with_pythonsrc_ext])
+
+# Check for required dependencies when pythonsrc-ext is enabled
+if test "$with_pythonsrc_ext" = yes; then
+  AC_PATH_PROG([PYTHON3], [python3])
+  if test -z "$PYTHON3"; then
+    AC_MSG_ERROR([python3 is required for --with-pythonsrc-ext but was not found])
+  fi
+
+  AC_PATH_PROG([CURL], [curl])
+  if test -z "$CURL"; then
+    AC_MSG_ERROR([curl is required for --with-pythonsrc-ext but was not found])
+  fi
+
+  AC_PATH_PROG([PIP3], [pip3])
+  if test -z "$PIP3"; then
+    AC_MSG_ERROR([pip3 is required for --with-pythonsrc-ext but was not found])
+  fi
+fi
+
 AC_SUBST(with_pythonsrc_ext)
 
 
@@ -1269,13 +1371,6 @@ if test "$with_zstd" = yes; then
 fi
 
 #
-# quicklz
-#
-PGAC_ARG_BOOL(with, quicklz, no,
-              [build with QuickLZ support (requires quicklz library)])
-AC_SUBST(with_quicklz)
-
-#
 # Realtime library
 #
 PGAC_ARG_BOOL(with, rt, yes,
@@ -1525,11 +1620,6 @@ failure.  It is possible the compiler isn't looking in the proper directory.
 Use --without-zlib to disable zlib support.])])
 fi
 
-if test "$with_quicklz" = yes; then
-  AC_CHECK_LIB(quicklz, qlz_compress, [],
-               [AC_MSG_ERROR([quicklz library not found.])])
-fi
-
 if test "$enable_external_fts" = yes; then
 AC_CHECK_LIB(jansson, jansson_version_str, [],
                [AC_MSG_ERROR([jansson library not found or version is too old, version must >= 2.13])])
@@ -1579,8 +1669,8 @@ AC_DEFUN([CHECK_APR], [
 if test "$enable_gpfdist" = yes ; then
   CHECK_APR()
   _LIBS="$LIBS"
-  AC_SEARCH_LIBS(event_add, [event], [], [AC_MSG_ERROR([libevent is required for gpfdist])])
-  EVENT_LIBS=" -levent"
+  PKG_CHECK_MODULES([EVENT], [libevent >= 2.0.0], [], [AC_MSG_ERROR([libevent >= 2.0.0 is required for gpfdist])])
+  EVENT_LIBS="$EVENT_LIBS"
   AC_SUBST(EVENT_LIBS)
 
   AC_SEARCH_LIBS(yaml_parser_initialize, [yaml], [have_yaml=yes; YAML_LIBS=" -lyaml"], [AC_MSG_WARN([libyaml is not found. disabling transformations for gpfdist.])])
@@ -1666,7 +1756,7 @@ if test "$enable_openssl_redirect" = yes; then
     AC_MSG_ERROR([--enable-openssl-redirect must specify --with-ssl])
   fi
 
-  AC_DEFINE([OPENSSL_ALLOW_REDIRECT], [1])
+  AC_DEFINE([OPENSSL_ALLOW_REDIRECT], [1], [Define to 1 if you want to allow OpenSSL redirects.])
 fi
 
 # Check for curl.
@@ -1729,6 +1819,13 @@ if test "$with_ldap" = yes ; then
 fi
 AC_SUBST(LDAP_LIBS_FE)
 AC_SUBST(LDAP_LIBS_BE)
+
+# for contrib/pax_storage
+if test "$enable_pax" = yes; then
+  if test "$enable_shared_postgres_backend" = no; then
+    AC_MSG_ERROR([PAX support requires --enable-shared-postgres-backend])
+  fi
+fi
 
 # for contrib/sepgsql
 if test "$with_selinux" = yes; then
@@ -1891,11 +1988,6 @@ fi
 # Check for bzlib.h
 if test "$with_libbz2" = yes ; then
   AC_CHECK_HEADER(bzlib.h, [], [AC_MSG_ERROR([header file <bzlib.h> is required for bzip2 support])], [])
-fi
-
-# Check for quicklz.h
-if test "$with_quicklz" = yes; then
-  AC_CHECK_HEADER(quicklz.h, [], [AC_MSG_ERROR([header file <quicklz.h> is required for QuickLZ support])])
 fi
 
 if test "$enable_external_fts" = yes; then

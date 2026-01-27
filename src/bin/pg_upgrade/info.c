@@ -119,9 +119,15 @@ gen_db_file_maps(DbInfo *old_db, DbInfo *new_db,
 		 * Verify that rels of same OID have same name.  The namespace name
 		 * should always match, but the relname might not match for TOAST
 		 * tables (and, therefore, their indexes).
+		 * 
+		 * XXX GPDB: for TOAST tables, don't insist on a match at all
+		 * yet; there are other ways for us to get mismatched names. Ideally
+		 * this will go away eventually.
 		 */
 		if (strcmp(old_rel->nspname, new_rel->nspname) != 0 ||
-			strcmp(old_rel->relname, new_rel->relname) != 0)
+			(strcmp(old_rel->relname, new_rel->relname) != 0 &&
+			 (/* GET_MAJOR_VERSION(old_cluster.major_version) >= 900 || */
+			  strcmp(old_rel->nspname, "pg_toast") != 0)))
 		{
 			pg_log(PG_WARNING, "Relation names for OID %u in database \"%s\" do not match: "
 				   "old name \"%s.%s\", new name \"%s.%s\"\n",
@@ -312,7 +318,7 @@ print_maps(FileNameMap *maps, int n_maps, const char *db_name)
 		pg_log(PG_VERBOSE, "mappings for database \"%s\":\n", db_name);
 
 		for (mapnum = 0; mapnum < n_maps; mapnum++)
-			pg_log(PG_VERBOSE, "%s.%s: %lu to %lu\n",
+			pg_log(PG_VERBOSE, "%s.%s: %u to %u\n",
 				   maps[mapnum].nspname, maps[mapnum].relname,
 				   maps[mapnum].old_relfilenode,
 				   maps[mapnum].new_relfilenode);
@@ -612,7 +618,7 @@ get_rel_infos(ClusterInfo *cluster, DbInfo *dbinfo)
 		relname = PQgetvalue(res, relnum, i_relname);
 		curr->relname = pg_strdup(relname);
 
-		curr->relfilenode = atorelfilenodeid(PQgetvalue(res, relnum, i_relfilenode));
+		curr->relfilenode = atooid(PQgetvalue(res, relnum, i_relfilenode));
 		curr->tblsp_alloc = false;
 
 		/* Is the tablespace oid non-default? */

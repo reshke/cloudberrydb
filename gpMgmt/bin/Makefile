@@ -79,26 +79,56 @@ endif
 #
 # Python Libraries
 #
+# Download Python source packages using pip3 download
+# This replaces the previously bundled tar.gz files to comply with Apache Release policy
+#
+MOCK_VERSION=1.0.1
+PYGRESQL_VERSION=5.2
+PSUTIL_VERSION=5.7.0
+PYYAML_VERSION=5.4.1
+
+download-python-deps:
+	@echo "--- Downloading Python dependencies for gpMgmt modules"
+	@mkdir -p $(PYLIB_SRC_EXT)
+	# Download psutil using curl (only if not exists)
+	@if [ ! -f $(PYLIB_SRC_EXT)/psutil-$(PSUTIL_VERSION).tar.gz ]; then \
+		echo "Downloading psutil-$(PSUTIL_VERSION).tar.gz..."; \
+		curl -sSL https://files.pythonhosted.org/packages/source/p/psutil/psutil-$(PSUTIL_VERSION).tar.gz -o $(PYLIB_SRC_EXT)/psutil-$(PSUTIL_VERSION).tar.gz; \
+	else \
+		echo "psutil-$(PSUTIL_VERSION).tar.gz already exists, skipping download"; \
+	fi
+	# Download PyYAML using curl (only if not exists)
+	@if [ ! -f $(PYLIB_SRC_EXT)/PyYAML-$(PYYAML_VERSION).tar.gz ]; then \
+		echo "Downloading PyYAML-$(PYYAML_VERSION).tar.gz..."; \
+		curl -sSL https://files.pythonhosted.org/packages/source/P/PyYAML/PyYAML-$(PYYAML_VERSION).tar.gz -o $(PYLIB_SRC_EXT)/PyYAML-$(PYYAML_VERSION).tar.gz; \
+	else \
+		echo "PyYAML-$(PYYAML_VERSION).tar.gz already exists, skipping download"; \
+	fi
+	# Download PyGreSQL using curl (only if not exists)
+	@if [ ! -f $(PYLIB_SRC_EXT)/PyGreSQL-$(PYGRESQL_VERSION).tar.gz ]; then \
+		echo "Downloading PyGreSQL-$(PYGRESQL_VERSION).tar.gz..."; \
+		curl -sSL https://files.pythonhosted.org/packages/source/P/PyGreSQL/PyGreSQL-$(PYGRESQL_VERSION).tar.gz -o $(PYLIB_SRC_EXT)/PyGreSQL-$(PYGRESQL_VERSION).tar.gz; \
+	else \
+		echo "PyGreSQL-$(PYGRESQL_VERSION).tar.gz already exists, skipping download"; \
+	fi
+	# Install wheel and cython for PyYAML building
+	pip3 install --user wheel "cython<3.0.0"
 
 #
 # PyGreSQL
 #
-PYGRESQL_VERSION=5.2
 PYGRESQL_DIR=PyGreSQL-$(PYGRESQL_VERSION)
-pygresql:
+pygresql: download-python-deps
 	@echo "--- PyGreSQL"
 	cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(PYGRESQL_DIR).tar.gz
 	cd $(PYLIB_SRC_EXT)/$(PYGRESQL_DIR)/ && PATH=$(DESTDIR)$(bindir):$$PATH LDFLAGS='$(LDFLAGS) $(PYGRESQL_LDFLAGS)' python3 setup.py build
 	cp -r $(PYLIB_SRC_EXT)/$(PYGRESQL_DIR)/build/lib*-3*/* $(PYLIB_DIR)/
 
-
 #
 # PSUTIL
 #
-PSUTIL_VERSION=5.7.0
 PSUTIL_DIR=psutil-$(PSUTIL_VERSION)
-
-psutil:
+psutil: download-python-deps
 	@echo "--- psutil"
 ifeq "$(findstring $(BLD_ARCH),aix7_ppc_64 )" ""
 	cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(PSUTIL_DIR).tar.gz
@@ -109,28 +139,18 @@ endif
 #
 # PYYAML
 #
-PYYAML_VERSION=5.3.1
 PYYAML_DIR=PyYAML-$(PYYAML_VERSION)
 
-pyyaml:
+pyyaml: download-python-deps
 	@echo "--- pyyaml"
 	cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(PYYAML_DIR).tar.gz
-	cd $(PYLIB_SRC_EXT)/$(PYYAML_DIR)/ && env -u CC python3 setup.py build
+	cd $(PYLIB_SRC_EXT)/$(PYYAML_DIR)/ && env -u CC CFLAGS="-w" python3 setup.py build
 	cp -r $(PYLIB_SRC_EXT)/$(PYYAML_DIR)/build/lib*-3*/* $(PYLIB_DIR)/
 
 #
-# PYLINT
+# MOCK SETUP
 #
-
-PYLINT_VERSION=0.21.0
-PYLINT_DIR=pylint-$(PYLINT_VERSION)
-PYLINT_PYTHONPATH=$(PYLIB_DIR):$(PYLIB_SRC_EXT)/$(PYLINT_DIR)/build/lib/
-MOCK_VERSION=1.0.1
 MOCK_DIR=mock-$(MOCK_VERSION)
-SETUP_TOOLS_VERSION=36.6.0
-PARSE_VERSION=1.8.2
-SETUP_TOOLS_DIR=setuptools-$(SETUP_TOOLS_VERSION)
-PARSE_DIR=parse-$(PARSE_VERSION)
 PYTHONSRC_INSTALL=$(PYLIB_SRC_EXT)/install
 PYTHON_VERSION=$(shell python3 -c "import sys; print ('%s.%s' % (sys.version_info[0:2]))")
 PYTHONSRC_INSTALL_SITE=$(PYLIB_SRC_EXT)/install/lib/python$(PYTHON_VERSION)/site-packages
@@ -139,33 +159,61 @@ PYTHONSRC_INSTALL_PYTHON_PATH=$(PYTHONPATH):$(PYTHONSRC_INSTALL_SITE)
 MOCK_BIN=$(PYTHONSRC_INSTALL)/lib/python$(PYTHON_VERSION)/site-packages/mock-1.0.1-py2.6.egg
 UBUNTU_PLATFORM=$(shell if lsb_release -a 2>/dev/null | grep -q 'Ubuntu' ; then echo "Ubuntu"; fi)
 
-pylint:
-	@echo "--- pylint"
-	@cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(PYLINT_DIR).tar.gz
-	@cd $(PYLIB_SRC_EXT)/$(PYLINT_DIR)/ && python3 setup.py build 1> /dev/null
-	@touch $(PYLIB_SRC_EXT)/$(PYLINT_DIR)/build/lib/__init__.py
-
 $(MOCK_BIN):
 	@echo "--- mock for platform $(UBUNTU_PLATFORM)"
 	@if [ "$(UBUNTU_PLATFORM)" = "Ubuntu" ]; then\
        pip3 install mock;\
-     else\
+    else\
+       mkdir -p $(PYLIB_SRC_EXT) && \
+       if [ ! -f $(PYLIB_SRC_EXT)/mock-$(MOCK_VERSION).zip ]; then \
+           echo "Downloading mock-$(MOCK_VERSION).zip..."; \
+           curl -sSL https://files.pythonhosted.org/packages/source/m/mock/mock-$(MOCK_VERSION).zip -o $(PYLIB_SRC_EXT)/mock-$(MOCK_VERSION).zip; \
+       else \
+           echo "mock-$(MOCK_VERSION).zip already exists, skipping download"; \
+       fi && \
        mkdir -p $(PYTHONSRC_INSTALL_SITE) && \
-	   cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(MOCK_DIR).tar.gz && \
-	   cd $(PYLIB_SRC_EXT)/$(MOCK_DIR)/ && \
-	   PYTHONPATH=$(PYTHONSRC_INSTALL_PYTHON_PATH) python3 setup.py install --prefix $(PYTHONSRC_INSTALL) ; \
-	 fi;
+       cd $(PYLIB_SRC_EXT)/ && unzip -q $(MOCK_DIR).zip && \
+       cd $(PYLIB_SRC_EXT)/$(MOCK_DIR)/ && \
+       PYTHONPATH=$(PYTHONSRC_INSTALL_PYTHON_PATH) python3 setup.py install --prefix $(PYTHONSRC_INSTALL) ; \
+    fi;
 
-PYTHON_FILES=`grep -l --exclude=Makefile --exclude=gplogfilter "/bin/env python3" *`\
-			 `grep -l "/bin/env python3" $(SRC)/../sbin/*`\
-			 `find ./gppylib -name "*.py"`\
-			 `find $(SRC)/../sbin -name "*.py"`
+# -----------------------------------------------------------------------------
+#
+# Ruff installation
+#
+# We dynamically retrieve the latest Ruff binary using the official install script.
+# No tarballs or source files for Ruff are stored in this repository.
+# This simplifies maintenance and ensures the linter is up-to-date.
+#
+# Note: Internet access is required for the initial installation.
+# -----------------------------------------------------------------------------
+RUFF_INSTALL_DIR ?= $(HOME)/.local/bin
+RUFF_BIN=$(RUFF_INSTALL_DIR)/ruff
 
-checkcode: pylint
-	@echo "Running pylint on management scripts..."
-	@PYTHONPATH=$(PYTHONPATH):$(PYLINT_PYTHONPATH) $(PYLIB_SRC_EXT)/$(PYLINT_DIR)/bin/pylint -i y $(PYTHON_FILES) --rcfile=.rcfile > $(SRC)/../pylint.txt || true
-	@echo -n "pylint_score=" > $(SRC)/../pylint_score.properties
-	@grep "Your code has been rated at" $(SRC)/../pylint.txt | sed -e "s|Your .* \(.*\)/.*|\1|" >> $(SRC)/../pylint_score.properties
+ruff:
+	@if [ ! -x "$(RUFF_BIN)" ]; then \
+		echo "--- Installing ruff linter"; \
+		mkdir -p $(RUFF_INSTALL_DIR); \
+		curl -LsSf https://astral.sh/ruff/install.sh | BIN_DIR=$(RUFF_INSTALL_DIR) sh; \
+		echo "--- ruff installed at $(RUFF_BIN)"; \
+	else \
+		echo "--- ruff already installed at $(RUFF_BIN)"; \
+	fi
+	@$(RUFF_BIN) --version
+
+PYTHON_FILES=`grep -l --exclude=Makefile \
+		      --exclude=ruff.txt \
+		      --exclude=gplogfilter \
+		      "/bin/env python3" *`\
+	      `grep -l "/bin/env python3" \
+		       $(SRC)/../sbin/*`\
+	      `find ./gppylib -name "*.py"`\
+	      `find $(SRC)/../sbin -name "*.py"`
+
+checkcode: ruff
+	@echo "Running ruff on management scripts..."
+	@RUST_LOG=error $(RUFF_BIN) check -v $(PYTHON_FILES) > $(SRC)/ruff.txt || true
+	@echo "Ruff lint completed. Results saved to $(SRC)/ruff.txt"
 
 check: $(MOCK_BIN)
 	@echo "Running pure unit and also "unit" tests that require cluster to be up..."
@@ -189,9 +237,9 @@ installcheck: installcheck-bash
 	$(MAKE) -C gpload_test $@
 
 clean distclean:
-	rm -rf $(PYLIB_SRC_EXT)/$(PYLINT_DIR)
-	rm -rf $(PYLIB_SRC_EXT)/$(PYGRESQL_DIR)/build
-	rm -rf $(PYLIB_SRC)/$(PYGRESQL_DIR)/build
+	rm -rf $(RUFF_BIN) $(SRC)/ruff.txt $(SRC)/.ruff_cache
+	rm -rf $(PYLIB_SRC_EXT)/*.tar.gz $(PYLIB_SRC_EXT)/*.zip $(PYLIB_SRC_EXT)/*.whl
+	rm -rf $(PYLIB_SRC_EXT)/*/
 	rm -rf *.pyc
 	rm -f analyzedbc gpactivatestandbyc gpaddmirrorsc gpcheckcatc \
 		  gpcheckperfc gpcheckresgroupimplc gpchecksubnetcfgc gpconfigc \

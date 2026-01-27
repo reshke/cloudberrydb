@@ -58,6 +58,8 @@ static void RemoveMatviewTablesEntries(Oid mvoid);
 
 static void SetMatviewAuxStatus_guts(Oid mvoid, char status);
 
+static void addRelationMVRefCount(Oid relid, int32 mvrefcount);
+
 /*
  * GetViewBaseRelids
  * Get all base tables's oid of a query tree.
@@ -96,7 +98,14 @@ GetViewBaseRelids(const Query *viewQuery, bool *has_foreign)
 		return NIL;
 	}
 
-	/* As we will use views, make it strict to unmutable. */
+	/*
+	 * Use immutable functions for views to ensure strict immutability.
+	 * While STABLE functions don't modify the database and return consistent
+	 * results for the same arguments within a statement, AQUMV rewrites
+	 * the query to new SQL. The behavior with STABLE functions isn't entirely
+	 * clear in this context, so we're conservatively requiring IMMUTABLE
+	 * functions for now.
+	 */
 	if (contain_mutable_functions((Node*)viewQuery))
 		return NIL;
 
@@ -151,7 +160,6 @@ add_view_dependency(Oid mvoid)
 	recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
 }
 
-
 /*
  * InsertMatviewAuxEntry
  *  We also insert gp_matview_tables entry here to maintain view.
@@ -166,6 +174,7 @@ InsertMatviewAuxEntry(Oid mvoid, const Query *viewQuery, bool skipdata)
 	List 		*relids;
 	NameData	mvname;
 	bool		has_foreign = false;
+	char	   *viewsql;
 
 	Assert(OidIsValid(mvoid));
 
@@ -185,7 +194,10 @@ InsertMatviewAuxEntry(Oid mvoid, const Query *viewQuery, bool skipdata)
 	values[Anum_gp_matview_aux_mvname - 1] = NameGetDatum(&mvname);
 
 	values[Anum_gp_matview_aux_has_foreign - 1] = BoolGetDatum(has_foreign);
-	
+
+	viewsql = nodeToString((Node *) copyObject(viewQuery));
+	values[Anum_gp_matview_aux_view_query - 1] = CStringGetTextDatum(viewsql);
+
 	if (skipdata)
 		values[Anum_gp_matview_aux_datastatus - 1] = CharGetDatum(MV_DATA_STATUS_EXPIRED);
 	else
@@ -230,6 +242,9 @@ InsertMatviewTablesEntries(Oid mvoid, List *relids)
 		values[Anum_gp_matview_tables_mvoid - 1] = ObjectIdGetDatum(mvoid);
 		tup = heap_form_tuple(RelationGetDescr(mtRel), values, nulls);
 		CatalogTupleInsert(mtRel, tup);
+
+		/* update relation's pg_class entry */
+		addRelationMVRefCount(relid, 1);
 	}
 
 	table_close(mtRel, RowExclusiveLock);
@@ -278,6 +293,7 @@ RemoveMatviewTablesEntries(Oid mvoid)
 	Relation	mtRel;
 	CatCList   *catlist;
 	int			i;
+	Oid			relid;
 
 	mtRel = table_open(GpMatviewTablesId, RowExclusiveLock);
 
@@ -289,6 +305,10 @@ RemoveMatviewTablesEntries(Oid mvoid)
 		/* This shouldn't happen, in case for that. */
 		if (!HeapTupleIsValid(tuple))
 			continue;
+
+		/* update relation's pg_class entry */
+		relid = ((Form_gp_matview_tables) GETSTRUCT(tuple))->relid;
+		addRelationMVRefCount(relid, -1);
 
 		CatalogTupleDelete(mtRel, &tuple->t_self);
 	}
@@ -314,6 +334,13 @@ SetRelativeMatviewAuxStatus(Oid relid, char status, char direction)
 	SysScanDesc desc;
 	List		*base_oids;
 	ListCell   *cell;
+
+	/*
+	 * Do a quick check if relation has relative materialized views.
+	 */
+	if (get_rel_relmvrefcount(relid) <= 0 &&
+		!get_rel_relispartition(relid))
+		return;
 
 	mvauxRel = table_open(GpMatviewAuxId, RowExclusiveLock);
 
@@ -554,4 +581,68 @@ MatviewIsUpToDate(Oid mvoid)
 
 	Form_gp_matview_aux auxform = (Form_gp_matview_aux) GETSTRUCT(mvauxtup);
 	return (auxform->datastatus == MV_DATA_STATUS_UP_TO_DATE);
+}
+
+static void
+addRelationMVRefCount(Oid relid, int32 mvrefcount)
+{
+	Relation	pgrel;
+	HeapTuple	tuple;
+
+	pgrel = table_open(RelationRelationId, RowExclusiveLock);
+	/*
+	 * Update relation's pg_class entry.
+	 */
+	tuple = SearchSysCacheCopy1(RELOID,
+								ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u", relid);
+
+	((Form_pg_class) GETSTRUCT(tuple))->relmvrefcount += mvrefcount;
+
+	CatalogTupleUpdate(pgrel, &tuple->t_self, tuple);
+
+	heap_freetuple(tuple);
+
+	table_close(pgrel, RowExclusiveLock);
+}
+
+/*
+ * Rename matview's name in gp_matview_aux.
+ */
+void
+mvaux_rename(Oid mvoid, char* newname)
+{
+	HeapTuple	tuple;
+	HeapTuple	newtuple;
+	Relation 	mvauxRel;
+	NameData	mvname;
+	Datum		valuesAtt[Natts_gp_matview_aux];
+	bool		nullsAtt[Natts_gp_matview_aux];
+	bool		replacesAtt[Natts_gp_matview_aux];
+
+	tuple = SearchSysCacheCopy1(MVAUXOID, ObjectIdGetDatum(mvoid));
+
+	if (!HeapTupleIsValid(tuple))
+		return;
+
+	mvauxRel = table_open(GpMatviewAuxId, RowExclusiveLock);
+
+	MemSet(valuesAtt, 0, sizeof(valuesAtt));
+	MemSet(nullsAtt, false, sizeof(nullsAtt));
+	MemSet(replacesAtt, false, sizeof(replacesAtt));
+
+	replacesAtt[Anum_gp_matview_aux_mvname -1] = true;
+
+	namestrcpy(&mvname, newname);
+	valuesAtt[Anum_gp_matview_aux_mvname - 1] = NameGetDatum(&mvname);
+
+	newtuple = heap_modify_tuple(tuple, RelationGetDescr(mvauxRel),
+									  valuesAtt, nullsAtt, replacesAtt);
+
+	CatalogTupleUpdate(mvauxRel, &newtuple->t_self, newtuple);
+	heap_freetuple(newtuple);
+	table_close(mvauxRel, RowExclusiveLock);
+
+	CommandCounterIncrement();
 }

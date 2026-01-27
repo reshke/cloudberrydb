@@ -184,6 +184,18 @@ typedef struct _dumpOptions
 	int			do_nothing;
 } DumpOptions;
 
+
+typedef enum
+{
+	Greenplum,
+	Cloudberry
+} DatabaseType;
+
+typedef struct
+{
+	DatabaseType type;
+	int version;
+} DatabaseVersion;
 /*
  *	We may want to have some more user-readable data, but in the mean
  *	time this gives us some abstraction and type checking.
@@ -216,6 +228,8 @@ typedef struct Archive
 	bool		exit_on_error;	/* whether to exit on SQL errors... */
 	int			n_errors;		/* number of errors (if no die) */
 
+	DatabaseVersion version;
+
 	/* The rest is private */
 } Archive;
 
@@ -238,6 +252,7 @@ typedef struct Archive
 
 typedef struct
 {
+	/* Note: this struct must not contain any unused bytes */
 	Oid			tableoid;
 	Oid			oid;
 } CatalogId;

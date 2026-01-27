@@ -310,7 +310,7 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 
 
 	elogif(Debug_appendonly_print_scan, LOG,
-		   "Append-only scan initialize for table '%s', %u/%u/%lu, segment file %u, EOF " INT64_FORMAT ", "
+		   "Append-only scan initialize for table '%s', %u/%u/%u, segment file %u, EOF " INT64_FORMAT ", "
 		   "(compression = %s, usable blocksize %d)",
 		   NameStr(scan->aos_rd->rd_rel->relname),
 		   scan->aos_rd->rd_node.spcNode,
@@ -783,141 +783,6 @@ AppendOnlyExecutorReadBlock_ResetCounts(AppendOnlyExecutorReadBlock *executorRea
 	executorReadBlock->totalRowsScanned = 0;
 }
 
-/*
- * Given a tuple in 'formatversion', convert it to a format that is
- * understood by the rest of the system.
- */
-static MemTuple
-upgrade_tuple(AppendOnlyExecutorReadBlock *executorReadBlock,
-			  MemTuple mtup, MemTupleBinding *pbind, int formatversion, bool *shouldFree)
-{
-	TupleDesc	tupdesc = pbind->tupdesc;
-	const int	natts = tupdesc->natts;
-	MemTuple	newtuple;
-	int			i;
-
-	static Datum *values = NULL;
-	static bool *isnull = NULL;
-	static int	nallocated = 0;
-
-	bool		convert_alignment = false;
-	bool		convert_numerics = false;
-
-	/*
-	 * MPP-7372: If the AO table was created before the fix for this issue, it
-	 * may contain tuples with misaligned bindings. Here we check if the
-	 * stored memtuple is problematic and then create a clone of the tuple
-	 * with properly aligned bindings to be used by the executor.
-	 */
-	if (formatversion < AOSegfileFormatVersion_Aligned64bit &&
-		memtuple_has_misaligned_attribute(mtup, pbind))
-		convert_alignment = true;
-
-	if (PG82NumericConversionNeeded(formatversion))
-	{
-		/*
-		 * On first call, figure out which columns are numerics, or domains
-		 * over numerics.
-		 */
-		if (executorReadBlock->numericAtts == NULL)
-		{
-			int			n;
-
-			executorReadBlock->numericAtts = (int *) palloc(natts * sizeof(int));
-
-			n = 0;
-			for (i = 0; i < natts; i++)
-			{
-				Oid			typeoid;
-
-				typeoid = getBaseType(TupleDescAttr(tupdesc, i)->atttypid);
-				if (typeoid == NUMERICOID)
-					executorReadBlock->numericAtts[n++] = i;
-			}
-			executorReadBlock->numNumericAtts = n;
-		}
-
-		/* If there were any numeric columns, we need to convert them. */
-		if (executorReadBlock->numNumericAtts > 0)
-			convert_numerics = true;
-	}
-
-	if (!convert_alignment && !convert_numerics)
-	{
-		/* No conversion required. Return the original tuple unmodified. */
-		*shouldFree = false;
-		return mtup;
-	}
-
-	/* Conversion is needed. */
-
-	/* enlarge the arrays if needed */
-	if (natts > nallocated)
-	{
-		if (values)
-			pfree(values);
-		if (isnull)
-			pfree(isnull);
-		values = (Datum *) MemoryContextAlloc(TopMemoryContext, natts * sizeof(Datum));
-		isnull = (bool *) MemoryContextAlloc(TopMemoryContext, natts * sizeof(bool));
-		nallocated = natts;
-	}
-
-	if (convert_alignment)
-	{
-		/* get attribute values form mis-aligned tuple */
-		memtuple_deform_misaligned(mtup, pbind, values, isnull);
-		/* Form a new, properly-aligned, tuple */
-		newtuple = memtuple_form(pbind, values, isnull);
-	}
-	else
-	{
-		/*
-		 * make a modifiable copy
-		 */
-		newtuple = memtuple_copy(mtup);
-	}
-
-	/*
-	 * NOTE: we do this *after* creating the new tuple, so that we can modify
-	 * the new, copied, tuple in-place.
-	 */
-	if (convert_numerics)
-	{
-		int			i;
-
-		/*
-		 * Get pointers to the datums within the tuple
-		 */
-		memtuple_deform(newtuple, pbind, values, isnull);
-
-		for (i = 0; i < executorReadBlock->numNumericAtts; i++)
-		{
-			/*
-			 * Before PostgreSQL 8.3, the n_weight and n_sign_dscale fields
-			 * were the other way 'round. Swap them.
-			 */
-			Datum		datum;
-			char	   *numericdata;
-			uint16		tmp;
-
-			if (isnull[executorReadBlock->numericAtts[i]])
-				continue;
-
-			datum = values[executorReadBlock->numericAtts[i]];
-			numericdata = VARDATA_ANY(DatumGetPointer(datum));
-
-			memcpy(&tmp, &numericdata[0], 2);
-			memcpy(&numericdata[0], &numericdata[2], 2);
-			memcpy(&numericdata[2], &tmp, 2);
-		}
-	}
-
-	*shouldFree = true;
-	return newtuple;
-}
-
-
 static void
 AOExecutorReadBlockBindingInit(AppendOnlyExecutorReadBlock *executorReadBlock,
 									   TupleTableSlot *slot)
@@ -969,11 +834,6 @@ AppendOnlyExecutorReadBlock_ProcessTuple(AppendOnlyExecutorReadBlock *executorRe
 		bool		shouldFree = false;
 
 		Assert(executorReadBlock->mt_bind);
-
-		/* If the tuple is not in the latest format, convert it */
-		// GPDB_12_MERGE_FIXME: Is pg_upgrade from old versions still a thing? Can we drop this?
-		if (formatVersion < AOSegfileFormatVersion_GetLatest ())
-			tuple = upgrade_tuple(executorReadBlock, tuple, executorReadBlock->mt_bind, formatVersion, &shouldFree);
 
 		ExecClearTuple(slot);
 		memtuple_deform(tuple, executorReadBlock->mt_bind, slot->tts_values, slot->tts_isnull);
@@ -1258,6 +1118,311 @@ getNextBlock(AppendOnlyScanDesc scan)
 	return true;
 }
 
+static int
+appendonly_locate_target_segment(AppendOnlyScanDesc scan, int64 targrow)
+{
+	int64 rowcount;
+
+	for (int i = scan->aos_segfiles_processed - 1; i < scan->aos_total_segfiles; i++)
+	{
+		if (i < 0)
+			continue;
+
+		rowcount = scan->aos_segfile_arr[i]->total_tupcount;
+		if (rowcount <= 0)
+			continue;
+
+		if (scan->aos_segfile_arr[i]->state == AOSEG_STATE_AWAITING_DROP)
+		{
+			/* skip this segment, it is awaiting drop */
+			continue;
+		}
+
+		if (scan->segfirstrow + rowcount - 1 >= targrow)
+		{
+			/* found the target segment */
+			return i;
+		}
+
+		/* continue next segment */
+		scan->segfirstrow += rowcount;
+		scan->segrowsprocessed = 0;
+	}
+
+	/* row is beyond the total number of rows in the relation */
+	return -1;
+}
+
+/*
+ * returns the segfile number in which `targrow` locates  
+ */
+static int
+appendonly_getsegment(AppendOnlyScanDesc scan, int64 targrow)
+{
+	int segidx, segno;
+
+	/* locate the target segment */
+	segidx = appendonly_locate_target_segment(scan, targrow);
+	if (segidx < 0)
+	{
+		CloseScannedFileSeg(scan);
+
+		/* done reading all segfiles */
+		Assert(scan->aos_done_all_segfiles);
+
+		return -1;
+	}
+
+	if (segidx + 1 > scan->aos_segfiles_processed)
+	{
+		/* done current segfile */
+		CloseScannedFileSeg(scan);
+		/*
+		 * Adjust aos_segfiles_processed to guide
+		 * SetNextFileSegForRead() opening next
+		 * right segfile.
+		 */
+		scan->aos_segfiles_processed = segidx;
+	}
+
+	segno = scan->aos_segfile_arr[segidx]->segno;
+	Assert(segno > InvalidFileSegNumber && segno <= AOTupleId_MaxSegmentFileNum);
+
+	if (scan->aos_need_new_segfile)
+	{
+		if (SetNextFileSegForRead(scan))
+		{
+			Assert(scan->segrowsprocessed == 0);
+			scan->needNextBuffer = true;
+		}
+		else
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Unexpected behavior, failed to open segno %d during scanning AO table %s",
+							segno, RelationGetRelationName(scan->aos_rd))));
+		}
+	}
+
+	return segno;
+}
+
+static inline int64
+appendonly_block_remaining_rows(AppendOnlyScanDesc scan)
+{
+	return (scan->executorReadBlock.rowCount - scan->executorReadBlock.blockRowsProcessed);
+}
+
+/*
+ * locates the block in which `targrow` exists
+ */
+static void
+appendonly_getblock(AppendOnlyScanDesc scan, int64 targrow, int64 *startrow)
+{
+	AppendOnlyExecutorReadBlock *varblock = &scan->executorReadBlock;
+	int64 rowcount = -1;
+
+	if (!scan->needNextBuffer)
+	{
+		/* we have a current block */
+		rowcount = appendonly_block_remaining_rows(scan);
+		Assert(rowcount >= 0);
+
+		if (*startrow + rowcount - 1 >= targrow)
+		{
+			/* row lies in current block, nothing to do */
+			return;
+		}
+		else
+		{
+			/* skip scanning remaining rows */
+			*startrow += rowcount;
+			scan->needNextBuffer = true;
+		}
+	}
+
+	/*
+	 * Keep reading block headers until we find the block containing
+	 * the target row.
+	 */
+	while (true)
+	{
+		elog(DEBUG2, "appendonly_getblock(): [targrow: %ld, currow: %ld, diff: %ld, "
+			 "startrow: %ld, rowcount: %ld, segfirstrow: %ld, segrowsprocessed: %ld, "
+			 "blockRowsProcessed: %ld, blockRowCount: %d]", targrow, *startrow + rowcount - 1,
+			 *startrow + rowcount - 1 - targrow, *startrow, rowcount, scan->segfirstrow,
+			 scan->segrowsprocessed, varblock->blockRowsProcessed,
+			 varblock->rowCount);
+
+		if (AppendOnlyExecutorReadBlock_GetBlockInfo(&scan->storageRead, varblock))
+		{
+			/* new block, reset blockRowsProcessed */
+			varblock->blockRowsProcessed = 0;
+			rowcount = appendonly_block_remaining_rows(scan);
+			Assert(rowcount > 0);
+			if (*startrow + rowcount - 1 >= targrow)
+			{
+				AppendOnlyExecutorReadBlock_GetContents(varblock);
+				/* got a new buffer to consume */
+				scan->needNextBuffer = false;
+				return;
+			}
+
+			*startrow += rowcount;
+			AppendOnlyExecutionReadBlock_FinishedScanBlock(varblock);
+			AppendOnlyStorageRead_SkipCurrentBlock(&scan->storageRead);
+			/* continue next block */
+		}
+		else
+			pg_unreachable(); /* unreachable code */
+	}
+}
+
+/*
+ * block directory based get_target_tuple()
+ */
+static bool
+appendonly_blkdirscan_get_target_tuple(AppendOnlyScanDesc scan, int64 targrow, TupleTableSlot *slot)
+{
+	int segno, segidx;
+	int64 rownum, rowsprocessed;
+	AOTupleId aotid;
+	AppendOnlyBlockDirectory *blkdir = &scan->aofetch->blockDirectory;
+
+	Assert(scan->blkdirscan != NULL);
+
+	/* locate the target segment */
+	segidx = appendonly_locate_target_segment(scan, targrow);
+	if (segidx < 0)
+		return false;
+
+	scan->aos_segfiles_processed = segidx + 1;
+
+	segno = scan->aos_segfile_arr[segidx]->segno;
+	Assert(segno > InvalidFileSegNumber && segno <= AOTupleId_MaxSegmentFileNum);
+
+	/*
+	 * Note: It is safe to assume that the scan's segfile array and the
+	 * blockdir's segfile array are identical. Otherwise, we should stop
+	 * processing and throw an exception to make the error visible.
+	 */
+	if (blkdir->segmentFileInfo[segidx]->segno != segno)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("segfile array contents in both scan descriptor "
+				 		"and block directory are not identical on "
+						"append-optimized relation '%s'",
+						RelationGetRelationName(blkdir->aoRel))));
+	}
+
+	/*
+	 * Set the current segfile info in the blkdir struct, so we can
+	 * reuse the (cached) block directory entry during the tuple fetch
+	 * operation below. See AppendOnlyBlockDirectory_GetCachedEntry().
+	 */
+	blkdir->currentSegmentFileNum = blkdir->segmentFileInfo[segidx]->segno;
+	blkdir->currentSegmentFileInfo = blkdir->segmentFileInfo[segidx];
+
+	/*
+	 * "segfirstrow" should be always pointing to the first row of
+	 * a new segfile in blkdir based ANALYZE, only locate_target_segment
+	 * could update its value.
+	 * 
+	 * "segrowsprocessed" is used for tracking the position of
+	 * processed rows in the current segfile.
+	 */
+	rowsprocessed = scan->segfirstrow + scan->segrowsprocessed;
+	/* locate the target row by seqscan block directory */
+	rownum = AOBlkDirScan_GetRowNum(scan->blkdirscan,
+									segno,
+									0,
+									targrow,
+									&rowsprocessed);
+
+	elog(DEBUG2, "AOBlkDirScan_GetRowNum(segno: %d, col: %d, targrow: %ld): "
+		 "[segfirstrow: %ld, segrowsprocessed: %ld, rownum: %ld, cached_mpentry_num: %d]",
+		 segno, 0, targrow, scan->segfirstrow, scan->segrowsprocessed, rownum,
+		 blkdir->cached_mpentry_num);
+	
+	if (rownum < 0)
+		return false;
+
+	scan->segrowsprocessed = rowsprocessed - scan->segfirstrow;
+
+	/* form the target tuple TID */
+	AOTupleIdInit(&aotid, segno, rownum);
+
+	/* ensure the target minipage entry was stored in fetch descriptor */
+	Assert(blkdir->cached_mpentry_num != InvalidEntryNum);
+	Assert(blkdir->minipages == &blkdir->minipages[0]);
+
+	/* fetch the target tuple */
+	if(!appendonly_fetch(scan->aofetch, &aotid, slot))
+		return false;
+
+	/* OK to return this tuple */
+	pgstat_count_heap_fetch(scan->aos_rd);
+
+	return true;
+}
+
+/*
+ * Given a specific target row number 'targrow' (in the space of all row numbers
+ * physically present in the table, i.e. across all segfiles), scan and return
+ * the corresponding tuple in 'slot'.
+ *
+ * If the tuple is visible, return true. Otherwise, return false.
+ */
+bool
+appendonly_get_target_tuple(AppendOnlyScanDesc aoscan, int64 targrow, TupleTableSlot *slot)
+{
+	AppendOnlyExecutorReadBlock *varblock = &aoscan->executorReadBlock;
+	bool visible;
+	int64 rowsprocessed, rownum;
+	int segno;
+	AOTupleId aotid;
+
+	if (aoscan->blkdirscan != NULL)
+		return appendonly_blkdirscan_get_target_tuple(aoscan, targrow, slot);
+
+	segno = appendonly_getsegment(aoscan, targrow);
+	if (segno < 0)
+		return false;
+
+	rowsprocessed = aoscan->segfirstrow + aoscan->segrowsprocessed;
+
+	appendonly_getblock(aoscan, targrow, &rowsprocessed);
+
+	aoscan->segrowsprocessed = rowsprocessed - aoscan->segfirstrow;
+
+	Assert(rowsprocessed + varblock->rowCount - 1 >= targrow);
+	rownum = varblock->blockFirstRowNum + (targrow - rowsprocessed);
+
+	elog(DEBUG2, "appendonly_getblock() returns: [segno: %d, rownum: %ld]", segno, rownum);
+
+	/* form the target tuple TID */
+	AOTupleIdInit(&aotid, segno, rownum);
+
+	visible = (aoscan->snapshot == SnapshotAny ||
+			   AppendOnlyVisimap_IsVisible(&aoscan->visibilityMap, &aotid));
+
+	if (visible && AppendOnlyExecutorReadBlock_FetchTuple(varblock, rownum, 0, NULL, slot))
+	{
+		/* OK to return this tuple */
+		pgstat_count_heap_fetch(aoscan->aos_rd);
+	}
+	else
+	{
+		if (slot != NULL)
+			ExecClearTuple(slot);
+		
+		return false;
+	}
+
+	return true;
+}
+
 /* ----------------
  *		appendonlygettup - fetch next appendonly tuple
  *
@@ -1278,6 +1443,8 @@ appendonlygettup(AppendOnlyScanDesc scan,
 				 TupleTableSlot *slot)
 {
 	Assert(ScanDirectionIsForward(dir));
+	/* should not be in ANALYZE - we use a different API */
+	Assert((scan->rs_base.rs_flags & SO_TYPE_ANALYZE) == 0);
 	Assert(scan->usableBlockSize > 0);
 
 	bool		isSnapshotAny = (scan->snapshot == SnapshotAny);
@@ -1318,12 +1485,7 @@ appendonlygettup(AppendOnlyScanDesc scan,
 
 			if (!isSnapshotAny && !AppendOnlyVisimap_IsVisible(&scan->visibilityMap, aoTupleId))
 			{
-				/*
-				 * The tuple is invisible.
-				 * In `analyze`, we can simply return false
-				 */
-				if ((scan->rs_base.rs_flags & SO_TYPE_ANALYZE) != 0)
-					return false;
+				/* The tuple is invisible */
 			}
 			else
 			{
@@ -1450,6 +1612,34 @@ finishWriteBlock(AppendOnlyInsertDesc aoInsertDesc)
 	Assert(!AppendOnlyStorageWrite_IsBufferAllocated(&aoInsertDesc->storageWrite));
 }
 
+static void
+appendonly_blkdirscan_init(AppendOnlyScanDesc scan)
+{
+	if (scan->aofetch == NULL)
+		scan->aofetch = appendonly_fetch_init(scan->aos_rd,
+											  scan->snapshot,
+											  scan->appendOnlyMetaDataSnapshot);
+
+	scan->blkdirscan = palloc0(sizeof(AOBlkDirScanData));
+	AOBlkDirScan_Init(scan->blkdirscan, &scan->aofetch->blockDirectory);
+}
+
+static void
+appendonly_blkdirscan_finish(AppendOnlyScanDesc scan)
+{
+	AOBlkDirScan_Finish(scan->blkdirscan);
+	pfree(scan->blkdirscan);
+	scan->blkdirscan = NULL;
+
+	if (scan->aofetch != NULL)
+	{
+		appendonly_fetch_finish(scan->aofetch);
+		pfree(scan->aofetch);
+		scan->aofetch = NULL;
+	}
+}
+
+
 /* ----------------------------------------------------------------
  *					 append-only access method interface
  * ----------------------------------------------------------------
@@ -1571,19 +1761,33 @@ appendonly_beginrangescan_internal(Relation relation,
 
 	scan->blockDirectory = NULL;
 
+	if ((flags & SO_TYPE_ANALYZE) != 0)
+	{
+		scan->segrowsprocessed = 0;
+		scan->segfirstrow = 0;
+		scan->targrow = 0;
+	}
+
 	if (segfile_count > 0)
 	{
 		Oid			visimaprelid;
 		Oid			visimapidxid;
+		Oid			blkdirrelid;
 
 		GetAppendOnlyEntryAuxOids(relation,
-								  NULL, NULL, NULL, &visimaprelid, &visimapidxid);
+								  NULL, &blkdirrelid, NULL, &visimaprelid, &visimapidxid);
 
 		AppendOnlyVisimap_Init(&scan->visibilityMap,
 							   visimaprelid,
 							   visimapidxid,
 							   AccessShareLock,
 							   appendOnlyMetaDataSnapshot);
+
+		if ((flags & SO_TYPE_ANALYZE) != 0)
+		{
+			if (OidIsValid(blkdirrelid))
+				appendonly_blkdirscan_init(scan);
+		}
 	}
 
 	scan->totalBytesRead = 0;
@@ -1659,7 +1863,7 @@ appendonly_beginscan(Relation relation,
 	 */
 	seginfo = GetAllFileSegInfo(relation,
 								appendOnlyMetaDataSnapshot, &segfile_count, NULL);
-
+	
 	aoscan = appendonly_beginrangescan_internal(relation,
 												snapshot,
 												appendOnlyMetaDataSnapshot,
@@ -1754,6 +1958,9 @@ appendonly_endscan(TableScanDesc scan)
 	if (aoscan->aos_total_segfiles > 0)
 		AppendOnlyVisimap_Finish(&aoscan->visibilityMap, AccessShareLock);
 
+	if (aoscan->blkdirscan != NULL)
+		appendonly_blkdirscan_finish(aoscan);
+
 	if (aoscan->aofetch)
 	{
 		appendonly_fetch_finish(aoscan->aofetch);
@@ -1772,30 +1979,36 @@ appendonly_endscan(TableScanDesc scan)
 	pfree(aoscan);
 }
 
-/* ----------------
- *		appendonly_getnextslot - retrieve next tuple in scan
- * ----------------
- */
-bool
-appendonly_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+
+static pg_attribute_hot_inline bool
+appendonly_getnextslot_noqual(AppendOnlyScanDesc aoscan, ScanDirection direction, TupleTableSlot *slot)
 {
-	AppendOnlyScanDesc aoscan = (AppendOnlyScanDesc) scan;
 	while (appendonlygettup(aoscan, direction, aoscan->rs_base.rs_nkeys, aoscan->aos_key, slot))
 	{
-		/* predicate pushdown test */
-		if (aoscan->aos_pushdown_qual)
-		{
-			/*
-			 * place the current tuple into the expr context
-			 */
-			aoscan->aos_pushdown_econtext->ecxt_scantuple = slot;
+		pgstat_count_heap_getnext(aoscan->aos_rd);
+		return true;
+	}
+	if (slot)
+		ExecClearTuple(slot);
+	return false;
+}
 
-			if (!ExecQual(aoscan->aos_pushdown_qual, aoscan->aos_pushdown_econtext))
-			{
-				/* Tuple fails qual, so free per-tuple memory and try again. */
-				ResetExprContext(aoscan->aos_pushdown_econtext);
-				continue;
-			}
+static bool
+appendonly_getnextslot_withqual(AppendOnlyScanDesc aoscan, ScanDirection direction, TupleTableSlot *slot)
+{
+	while (appendonlygettup(aoscan, direction, aoscan->rs_base.rs_nkeys, aoscan->aos_key, slot))
+	{
+		Assert(aoscan->aos_pushdown_qual);
+		/*
+		* place the current tuple into the expr context
+		*/
+		aoscan->aos_pushdown_econtext->ecxt_scantuple = slot;
+		/* predicate pushdown test */
+		if (!ExecQual(aoscan->aos_pushdown_qual, aoscan->aos_pushdown_econtext))
+		{
+			/* Tuple fails qual, so free per-tuple memory and try again. */
+			ResetExprContext(aoscan->aos_pushdown_econtext);
+			continue;
 		}
 
 		pgstat_count_heap_getnext(aoscan->aos_rd);
@@ -1807,6 +2020,25 @@ appendonly_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSl
 		ExecClearTuple(slot);
 
 	return false;
+}
+
+/* ----------------
+ *		appendonly_getnextslot - retrieve next tuple in scan
+ * ----------------
+ */
+pg_attribute_hot bool
+appendonly_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+{
+	AppendOnlyScanDesc aoscan = (AppendOnlyScanDesc) scan;
+	/*
+	* [0] = noqual, [1] = withqual
+	*/
+	static bool (* const getnext_impl[2])(AppendOnlyScanDesc, ScanDirection, TupleTableSlot*) = {
+		appendonly_getnextslot_noqual,
+		appendonly_getnextslot_withqual
+	};
+
+	return getnext_impl[!!aoscan->aos_pushdown_qual](aoscan, direction, slot);
 }
 
 uint32
@@ -2302,7 +2534,7 @@ appendonly_fetch(AppendOnlyFetchDesc aoFetchDesc,
 	if (aoFetchDesc->lastSequence[segmentFileNum] == InvalidAORowNum)
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("Row No. %ld in segment file No. %d is out of scanning scope for target relfilenode %lu.",
+				 errmsg("Row No. %ld in segment file No. %d is out of scanning scope for target relfilenode %u.",
 				 		rowNum, segmentFileNum, aoFetchDesc->relation->rd_node.relNode)));
 
 	/*

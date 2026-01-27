@@ -291,10 +291,17 @@ private:
 	);
 
 	// translate DXL window node into GPDB window node
-	Plan *TranslateDXLWindow(
+	Plan *TranslateDXLWindowAgg(
 		const CDXLNode *motion_dxlnode, CDXLTranslateContext *output_context,
 		CDXLTranslationContextArray *
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
+	// translate DXL window node into window hash agg node
+	Plan *TranslateDXLWindowHashAgg(
+		const CDXLNode *window_dxlnode, CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray 
+			*ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
 	// translate DXL sort node into GPDB Sort plan node
@@ -607,10 +614,6 @@ private:
 	// sets the vartypmod fields in the target entries of the given target list
 	static void SetVarTypMod(const CDXLPhysicalCTAS *dxlop, List *target_list);
 
-	// translate the into clause for a DXL physical CTAS operator
-	static IntoClause *TranslateDXLPhyCtasToIntoClause(
-		const CDXLPhysicalCTAS *dxlop);
-
 	// translate the distribution policy for a DXL physical CTAS operator
 	static GpPolicy *TranslateDXLPhyCtasToDistrPolicy(
 		const CDXLPhysicalCTAS *dxlop, List *target_list);
@@ -643,7 +646,7 @@ private:
 	// get all non-dropped columns of a relation
 	static List *GetRelationActiveColums(const IMDRelation *md_rel);
 	
-	static Node *FixUpperExprMutatorProjectSet(Node *node, List *context);
+	static Node *FixUpperExprMutatorProjectSet(Node *node, void *context);
 
 	// checks if index is used for Order by.
 	bool IsIndexForOrderBy(
@@ -651,6 +654,9 @@ private:
 		CDXLTranslationContextArray *ctxt_translation_prev_siblings,
 		CDXLTranslateContext *output_context,
 		CDXLNode *index_cond_list_dxlnode);
+
+	// fill the aggno and transno for the aggnode
+	static void TranslateAggFillInfo(CContextDXLToPlStmt *context, Aggref *aggref);
 };
 }  // namespace gpdxl
 

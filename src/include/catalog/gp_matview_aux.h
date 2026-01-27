@@ -44,6 +44,10 @@ CATALOG(gp_matview_aux,7153,GpMatviewAuxId)
 	bool		has_foreign;	/* view query has foreign tables? */
 	/* view's data status */
 	char		datastatus; 
+
+#ifdef CATALOG_VARLEN			/* variable-length fields start here */
+	pg_node_tree view_query BKI_FORCE_NOT_NULL;
+#endif
 } FormData_gp_matview_aux;
 
 
@@ -89,5 +93,7 @@ extern bool MatviewUsableForAppendAgg(Oid mvoid);
 extern bool MatviewIsGeneralyUpToDate(Oid mvoid);
 
 extern bool MatviewIsUpToDate(Oid mvoid);
+
+extern void mvaux_rename(Oid mvoid, char* newname);
 
 #endif			/* GP_MATVIEW_AUX_H */

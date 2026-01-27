@@ -57,15 +57,7 @@
 #include "nodes/pathnodes.h"
 #include "nodes/pg_list.h"
 
-typedef struct
-{
-	int 	varno;
-} aqumv_adjust_varno_context;
-
-extern void aqumv_adjust_simple_query(Query *viewQuery);
 static bool aqumv_process_from_quals(Node *query_quals, Node *mv_quals, List** post_quals);
-static void aqumv_adjust_varno(Query *parse, int delta);
-static Node *aqumv_adjust_varno_mutator(Node *node, aqumv_adjust_varno_context *context);
 
 typedef struct
 {
@@ -81,6 +73,13 @@ static void aqumv_sort_targetlist(aqumv_equivalent_transformation_context* conte
 static Node *aqumv_adjust_sub_matched_expr_mutator(Node *node, aqumv_equivalent_transformation_context *context);
 static bool contain_var_or_aggstar_clause_walker(Node *node, void *context);
 static bool check_partition(Query *parse, Oid origin_rel_oid);
+
+static bool
+groupby_query_rewrite(PlannerInfo *subroot,
+						Query *parse,
+						Query *viewQuery,
+						aqumv_equivalent_transformation_context *context,
+						AqumvContext aqumv_context);
 
 typedef struct
 {
@@ -147,11 +146,12 @@ answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_cont
 	RangeTblEntry 	*rte;
 	Oid				origin_rel_oid;
 	RangeTblEntry 	*mvrte;
-	Relation		ruleDesc;
 	Relation		matviewRel;
-	SysScanDesc		rcscan;
+	Relation		mvauxDesc;
+	TupleDesc		mvaux_tupdesc;
+	SysScanDesc		mvscan;
 	HeapTuple		tup;
-	Form_pg_rewrite	rewrite_tup;
+	Form_gp_matview_aux mvaux_tup;
 	bool			need_close = false;
 	PlannerInfo		*subroot;
 	List			*mv_final_tlist = NIL; /* Final target list we want to rewrite to. */
@@ -217,20 +217,24 @@ answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_cont
 	if (relkind == RELKIND_FOREIGN_TABLE && !aqumv_allow_foreign_table)
 		return mv_final_rel;
 
-	ruleDesc = table_open(RewriteRelationId, AccessShareLock);
+	mvauxDesc = table_open(GpMatviewAuxId, AccessShareLock);
+	mvaux_tupdesc = RelationGetDescr(mvauxDesc);
 
-	rcscan = systable_beginscan(ruleDesc, InvalidOid, false,
+	mvscan = systable_beginscan(mvauxDesc, InvalidOid, false,
 								NULL, 0, NULL);
 
-	while (HeapTupleIsValid(tup = systable_getnext(rcscan)))
+	while (HeapTupleIsValid(tup = systable_getnext(mvscan)))
 	{
+		Datum		view_query_datum;
+		char		*view_query_str;
+		bool		is_null;
+
 		CHECK_FOR_INTERRUPTS();
 		if (need_close)
 			table_close(matviewRel, AccessShareLock);
 
-		rewrite_tup = (Form_pg_rewrite) GETSTRUCT(tup);
-
-		matviewRel = table_open(rewrite_tup->ev_class, AccessShareLock);
+		mvaux_tup = (Form_gp_matview_aux) GETSTRUCT(tup);
+		matviewRel = table_open(mvaux_tup->mvoid, AccessShareLock);
 		need_close = true;
 
 		if (!RelationIsPopulated(matviewRel))
@@ -251,7 +255,14 @@ answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_cont
 		/*
 		 * Get a copy of view query to rewrite.
 		 */
-		viewQuery = copyObject(get_matview_query(matviewRel));
+		view_query_datum = heap_getattr(tup,
+										Anum_gp_matview_aux_view_query,
+										mvaux_tupdesc,
+										&is_null);
+
+		view_query_str = TextDatumGetCString(view_query_datum);
+		viewQuery = copyObject(stringToNode(view_query_str));
+		pfree(view_query_str);
 		Assert(IsA(viewQuery, Query));
 
 		/*
@@ -349,40 +360,28 @@ answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_cont
 		subroot->tuple_fraction = root->tuple_fraction;
 		subroot->limit_tuples = root->limit_tuples;
 
-		/* Adjust to valid query tree and fix varno after rewrite.*/
-		aqumv_adjust_simple_query(viewQuery);
-
-		/*
-		 * AQUMV_FIXME_MVP
-		 * Are stable functions OK?
-		 * A STABLE function cannot modify the database and is guaranteed to
-		 * return the same results given the same arguments for all rows
-		 * within a single statement.
-		 * But AQUMV rewrites the query to a new SQL actually, though the same
-		 * results is guaranteed.
-		 * Its's unclear whether STABLE is OK, let's be conservative for now.
-		 */
-		if(contain_mutable_functions((Node *)viewQuery))
-			continue;
-
 		context = aqumv_init_context(viewQuery->targetList, matviewRel->rd_att);
 
 		if (!parse->hasAggs && viewQuery->hasAggs)
 			continue;
 
-		if (parse->hasAggs && viewQuery->hasAggs)
+		if (parse->groupClause != NIL && viewQuery->groupClause != NIL)
 		{
+			if (!groupby_query_rewrite(subroot, parse, viewQuery, context, aqumv_context))
+				continue;
+		}
+		else if (parse->hasAggs && viewQuery->hasAggs)
+		{
+			/* Both don't have group by. */
+			{
 			if (parse->hasDistinctOn ||
 				parse->distinctClause != NIL ||
-				parse->groupClause != NIL || /* TODO: GROUP BY */
 				parse->groupingSets != NIL ||
 				parse->groupDistinct)
 				continue;
 
-			/* No Group by now. */
 			if (viewQuery->hasDistinctOn ||
 				viewQuery->distinctClause != NIL ||
-				viewQuery->groupClause != NIL ||
 				viewQuery->groupingSets != NIL ||
 				viewQuery->groupDistinct ||
 				viewQuery->havingQual != NULL || /* HAVING clause is not supported on IMMV yet. */
@@ -400,7 +399,7 @@ answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_cont
 			 */
 			if (parse->sortClause != NIL || viewQuery->sortClause != NIL)
 			{
-				/* Earse view's sort caluse, it's ok to let alone view's target list. */
+				/* Erase view's sort caluse, it's ok to let alone view's target list. */
 				viewQuery->sortClause = NIL;
 			}
 
@@ -475,6 +474,7 @@ answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_cont
 
 			/* Select from a mv never have that.*/
 			subroot->append_rel_list = NIL;
+			}
 		}
 		else
 		{
@@ -620,8 +620,8 @@ answer_query_using_materialized_views(PlannerInfo *root, AqumvContext aqumv_cont
 	}
 	if (need_close)
 		table_close(matviewRel, AccessShareLock);
-	systable_endscan(rcscan);
-	table_close(ruleDesc, AccessShareLock);
+	systable_endscan(mvscan);
+	table_close(mvauxDesc, AccessShareLock);
 	
 	return current_rel;
 }
@@ -874,111 +874,6 @@ aqumv_process_targetlist(aqumv_equivalent_transformation_context *context, List 
 	return !context->has_unmatched;
 }
 
-void aqumv_adjust_simple_query(Query *viewQuery)
-{
-	ListCell *lc;
-	/*
-	 * AQUMV
-	 * We have to rewrite now before we do the real Equivalent
-	 * Transformation 'rewrite'.
-	 * Because actions stored in rule is not a normal query tree,
-	 * it can't be used directly, with exception to new/old relations used to
-	 * refresh mv.
-	 * Erase unused relations, keep the right one.
-	 */
-	foreach (lc, viewQuery->rtable)
-	{
-		RangeTblEntry *rtetmp = lfirst(lc);
-		if ((rtetmp->relkind == RELKIND_MATVIEW) &&
-			(rtetmp->alias != NULL) &&
-			(strcmp(rtetmp->alias->aliasname, "new") == 0 ||
-			 strcmp(rtetmp->alias->aliasname, "old") == 0))
-		{
-			foreach_delete_current(viewQuery->rtable, lc);
-		}
-	}
-
-	/*
-	 * Now we have the right relation, adjust
-	 * varnos in its query tree.
-	 * AQUMV_FIXME_MVP: Only one single relation
-	 * is supported now, we could assign varno
-	 * to 1 opportunistically.
-	 */
-	aqumv_adjust_varno(viewQuery, 1);
-}
-
-/*
- * Process varno after we eliminate mv's actions("old" and "new" relation)
- * Correct rindex and all varnos with a delta.
- *
- * MV's actions query tree:
- *		[rtable]
- *				RangeTblEntry [rtekind=RTE_RELATION]
- *						[alias] Alias [aliasname="old"]
- *				RangeTblEntry [rtekind=RTE_RELATION]
- *						[alias] Alias [aliasname="new"]
- *				RangeTblEntry [rtekind=RTE_RELATION]
- *		[jointree]
- *				FromExpr []
- *						[fromlist]
- *								RangeTblRef [rtindex=3]
- *		[targetList]
- *				TargetEntry [resno=1 resname="c1"]
- *						Var [varno=3 varattno=1]
- *				TargetEntry [resno=2 resname="c2"]
- *						Var [varno=3 varattno=2]
- *------------------------------------------------------------------------------------------
- * MV's query tree after rewrite:
- *		[rtable]
- *				RangeTblEntry [rtekind=RTE_RELATION]
- *		[jointree]
- *				FromExpr []
- *						[fromlist]
- *								RangeTblRef [rtindex=3]
- *		[targetList]
- *				TargetEntry [resno=1 resname="c1"]
- *						Var [varno=3 varattno=1]
- *				TargetEntry [resno=2 resname="c2"]
- *						Var [varno=3 varattno=2]
- *------------------------------------------------------------------------------------------
- * MV's query tree after varno adjust:
- *		[rtable]
- *				RangeTblEntry [rtekind=RTE_RELATION]
- *		[jointree]
- *				FromExpr []
- *						[fromlist]
- *								RangeTblRef [rtindex=1]
- *		[targetList]
- *				TargetEntry [resno=1 resname="c1"]
- *						Var [varno=1 varattno=1]
- *				TargetEntry [resno=2 resname="c2"]
- *						Var [varno=1 varattno=2]
- *
- */
-static void
-aqumv_adjust_varno(Query* parse, int varno)
-{
-	aqumv_adjust_varno_context context;
-	context.varno = varno;
-	parse = query_tree_mutator(parse, aqumv_adjust_varno_mutator, &context, QTW_DONT_COPY_QUERY);
-}
-
-static Node *aqumv_adjust_varno_mutator(Node *node, aqumv_adjust_varno_context *context)
-{
-	if (node == NULL)
-		return NULL;
-	if (IsA(node, Var))
-	{
-		((Var *)node)->varno = context->varno;
-		((Var *)node)->varnosyn = context->varno; /* Keep syntactic with varno. */
-	}
-	else if (IsA(node, RangeTblRef))
-		/* AQUMV_FIXME_MVP: currently we have only one relation */
-		((RangeTblRef*) node)->rtindex = context->varno;
-	return expression_tree_mutator(node, aqumv_adjust_varno_mutator, context);
-}
-
 /*
  * check_partition - Check if the query's range table entries align with the partitioned table structure.
  *
@@ -1011,5 +906,93 @@ check_partition(Query *parse, Oid origin_rel_oid)
 		if (strcmp(underling_relname, other_rte->alias->aliasname) != 0)
 			return false;
 	}
+	return true;
+}
+
+static bool
+groupby_query_rewrite(PlannerInfo *subroot,
+						Query *parse,
+						Query *viewQuery,
+						aqumv_equivalent_transformation_context *context,
+						AqumvContext aqumv_context)
+{
+	List	*post_quals = NIL;
+	List	*mv_final_tlist = NIL;
+
+	if (!parse->hasAggs || !viewQuery->hasAggs)
+		return false;
+
+	/* Both have Group by and aggregation. */
+	if (parse->groupClause == NIL || viewQuery->groupClause == NIL)
+		return false;
+
+	if (parse->hasDistinctOn ||
+		parse->distinctClause != NIL ||
+		parse->groupingSets != NIL ||
+		parse->sortClause != NIL ||
+		limit_needed(parse) ||
+		parse->havingQual != NULL ||
+		parse->groupDistinct)
+		return false;
+
+	if (viewQuery->hasDistinctOn ||
+		viewQuery->distinctClause != NIL ||
+		viewQuery->groupingSets != NIL ||
+		viewQuery->groupDistinct ||
+		viewQuery->havingQual != NULL ||
+		viewQuery->sortClause != NIL ||
+		limit_needed(viewQuery))
+		return false;
+
+	if (tlist_has_srf(parse))
+		return false;
+
+	preprocess_qual_conditions(subroot, (Node *) viewQuery->jointree);
+
+	if(!aqumv_process_from_quals(parse->jointree->quals, viewQuery->jointree->quals, &post_quals))
+		return false;
+
+	if (post_quals != NIL)
+		return false;
+
+	/*
+	 * There should be no post_quals for now, erase those from view.
+	 */
+	viewQuery->jointree->quals = NULL;
+
+	if (list_difference(parse->groupClause, viewQuery->groupClause))
+		return false;
+
+	if (list_difference(viewQuery->groupClause, parse->groupClause))
+		return false;
+
+	/*
+	 * Group By clauses are equal, erase those from view.
+	 */
+	viewQuery->groupClause = NIL;
+
+	if(!aqumv_process_targetlist(context, aqumv_context->raw_processed_tlist, &mv_final_tlist))
+		return false;
+
+	viewQuery->targetList = mv_final_tlist;
+	/* SRF is not supported now, but correct the field. */
+	viewQuery->hasTargetSRFs = parse->hasTargetSRFs;
+	viewQuery->hasAggs = false;
+	subroot->agginfos = NIL;
+	subroot->aggtransinfos = NIL;
+	subroot->hasNonPartialAggs = false;
+	subroot->hasNonSerialAggs = false;
+	subroot->numOrderedAggs = false;
+	/* CBDB specifical */
+	subroot->hasNonCombine = false;
+	subroot->numPureOrderedAggs = false;
+	/*
+	 * NB: Update processed_tlist again in case that tlist has been changed.
+	 */
+	subroot->processed_tlist = NIL;
+	preprocess_targetlist(subroot);
+
+	/* Select from a mv never have that.*/
+	subroot->append_rel_list = NIL;
 	return true;
 }

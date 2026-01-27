@@ -1809,9 +1809,9 @@ CScalarAggFunc *
 CUtils::PopAggFunc(
 	CMemoryPool *mp, IMDId *pmdidAggFunc, const CWStringConst *pstrAggFunc,
 	BOOL is_distinct, EAggfuncStage eaggfuncstage, BOOL fSplit,
-	IMDId *
-		pmdidResolvedReturnType,  // return type to be used if original return type is ambiguous
-	EAggfuncKind aggkind, ULongPtrArray *argtypes, BOOL fRepSafe)
+	IMDId *pmdidResolvedReturnType,  // return type to be used if original return type is ambiguous
+	EAggfuncKind aggkind, ULongPtrArray *argtypes, BOOL fRepSafe,
+	BOOL is_agg_star)
 {
 	GPOS_ASSERT(nullptr != pmdidAggFunc);
 	GPOS_ASSERT(nullptr != pstrAggFunc);
@@ -1820,14 +1820,15 @@ CUtils::PopAggFunc(
 
 	return GPOS_NEW(mp) CScalarAggFunc(
 		mp, pmdidAggFunc, pmdidResolvedReturnType, pstrAggFunc, is_distinct,
-		eaggfuncstage, fSplit, aggkind, argtypes, fRepSafe);
+		eaggfuncstage, fSplit, aggkind, argtypes, fRepSafe, is_agg_star);
 }
 
 // generate an aggregate function
 CExpression *
 CUtils::PexprAggFunc(CMemoryPool *mp, IMDId *pmdidAggFunc,
 					 const CWStringConst *pstrAggFunc, const CColRef *colref,
-					 BOOL is_distinct, EAggfuncStage eaggfuncstage, BOOL fSplit)
+					 BOOL is_distinct, EAggfuncStage eaggfuncstage, BOOL fSplit,
+					 BOOL is_agg_star)
 {
 	GPOS_ASSERT(nullptr != pstrAggFunc);
 	GPOS_ASSERT(nullptr != colref);
@@ -1840,7 +1841,7 @@ CUtils::PexprAggFunc(CMemoryPool *mp, IMDId *pmdidAggFunc,
 	// generate aggregate function
 	CScalarAggFunc *popScAggFunc =
 		PopAggFunc(mp, pmdidAggFunc, pstrAggFunc, is_distinct, eaggfuncstage,
-				   fSplit, nullptr, EaggfunckindNormal, argtypes, false);
+				   fSplit, nullptr, EaggfunckindNormal, argtypes, false, is_agg_star);
 
 	// generate function arguments
 	CExpressionArray *pdrgpexpr = GPOS_NEW(mp) CExpressionArray(mp);
@@ -1900,7 +1901,8 @@ CUtils::PexprCountStar(CMemoryPool *mp)
 	CScalarAggFunc *popScAggFunc = PopAggFunc(
 		mp, mdid, str, false /*is_distinct*/,
 		EaggfuncstageGlobal /*eaggfuncstage*/, false /*fSplit*/, nullptr,
-		EaggfunckindNormal, GPOS_NEW(mp) ULongPtrArray(mp), false);
+		EaggfunckindNormal, GPOS_NEW(mp) ULongPtrArray(mp), false /* fRepSafe */,
+		true /* m_is_agg_star */);
 
 	CExpression *pexprCountStar =
 		GPOS_NEW(mp) CExpression(mp, popScAggFunc, pdrgpexpr);
@@ -2092,7 +2094,7 @@ CUtils::PexprSum(CMemoryPool *mp, const CColRef *colref)
 	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
 
 	return PexprAgg(mp, md_accessor, IMDType::EaggSum, colref,
-					false /*is_distinct*/);
+					false /*is_distinct*/, false /* is_agg_star */);
 }
 
 // generate a GbAgg with sum(col) expressions for all columns in the passed array
@@ -2131,11 +2133,11 @@ CUtils::PexprGbAggSum(CMemoryPool *mp, CExpression *pexprLogical,
 
 // generate a count(<distinct> col) expression
 CExpression *
-CUtils::PexprCount(CMemoryPool *mp, const CColRef *colref, BOOL is_distinct)
+CUtils::PexprCount(CMemoryPool *mp, const CColRef *colref, BOOL is_distinct, BOOL is_agg_star)
 {
 	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
 
-	return PexprAgg(mp, md_accessor, IMDType::EaggCount, colref, is_distinct);
+	return PexprAgg(mp, md_accessor, IMDType::EaggCount, colref, is_distinct, is_agg_star);
 }
 
 // generate a min(col) expression
@@ -2144,14 +2146,14 @@ CUtils::PexprMin(CMemoryPool *mp, CMDAccessor *md_accessor,
 				 const CColRef *colref)
 {
 	return PexprAgg(mp, md_accessor, IMDType::EaggMin, colref,
-					false /*is_distinct*/);
+					false /*is_distinct*/, false /*is_agg_star*/);
 }
 
 // generate an aggregate expression of the specified type
 CExpression *
 CUtils::PexprAgg(CMemoryPool *mp, CMDAccessor *md_accessor,
 				 IMDType::EAggType agg_type, const CColRef *colref,
-				 BOOL is_distinct)
+				 BOOL is_distinct, BOOL is_agg_star)
 {
 	GPOS_ASSERT(IMDType::EaggGeneric > agg_type);
 	GPOS_ASSERT(colref->RetrieveType()->GetMdidForAggType(agg_type)->IsValid());
@@ -2165,7 +2167,7 @@ CUtils::PexprAgg(CMemoryPool *mp, CMDAccessor *md_accessor,
 		CWStringConst(mp, pmdagg->Mdname().GetMDName()->GetBuffer());
 
 	return PexprAggFunc(mp, agg_mdid, str, colref, is_distinct,
-						EaggfuncstageGlobal /*fGlobal*/, false /*fSplit*/);
+						EaggfuncstageGlobal /*fGlobal*/, false /*fSplit*/, is_agg_star);
 }
 
 // generate a select expression
@@ -2267,7 +2269,8 @@ CUtils::PexprLogicalProject(CMemoryPool *mp, CExpression *pexpr,
 
 // generate a sequence project expression
 CExpression *
-CUtils::PexprLogicalSequenceProject(CMemoryPool *mp, CDistributionSpec *pds,
+CUtils::PexprLogicalSequenceProject(CMemoryPool *mp, COperator::ESPType sptype,
+									CDistributionSpec *pds,
 									COrderSpecArray *pdrgpos,
 									CWindowFrameArray *pdrgpwf,
 									CExpression *pexpr,
@@ -2283,7 +2286,8 @@ CUtils::PexprLogicalSequenceProject(CMemoryPool *mp, CDistributionSpec *pds,
 				pexprPrjList->Pop()->Eopid());
 
 	return GPOS_NEW(mp) CExpression(
-		mp, GPOS_NEW(mp) CLogicalSequenceProject(mp, pds, pdrgpos, pdrgpwf),
+		mp,
+		GPOS_NEW(mp) CLogicalSequenceProject(mp, sptype, pds, pdrgpos, pdrgpwf),
 		pexpr, pexprPrjList);
 }
 
@@ -3653,7 +3657,9 @@ CUtils::PdrgpcrExactCopy(CMemoryPool *mp, CColRefArray *colref_array)
 // from old to copied variables are added to it.
 CColRefArray *
 CUtils::PdrgpcrCopy(CMemoryPool *mp, CColRefArray *colref_array,
-					BOOL fAllComputed, UlongToColRefMap *colref_mapping)
+					BOOL fAllComputed, UlongToColRefMap *colref_mapping,
+					UlongToColRefMap *consumer_mapping, UlongToColRefArrayMap *producer_mapping,
+					 BOOL check_usage)
 {
 	// get column factory from optimizer context object
 	CColumnFactory *col_factory = COptCtxt::PoctxtFromTLS()->Pcf();
@@ -3674,12 +3680,62 @@ CUtils::PdrgpcrCopy(CMemoryPool *mp, CColRefArray *colref_array,
 			new_colref = col_factory->PcrCopy(colref);
 		}
 
+		if (check_usage) {
+			CColRef::EUsedStatus colref_status = colref->GetUsage(true, true);
+			switch(colref_status) {
+				case CColRef::EUsedStatus::EUsed:
+				{
+					new_colref->MarkAsUsed();
+					break;
+				}
+				case CColRef::EUsedStatus::EUnused:
+				{
+					new_colref->MarkAsUnused();
+					break;
+				}
+				case CColRef::EUsedStatus::EUnknown:
+				{
+					new_colref->MarkAsUnknown();
+					break;
+				}
+				default:
+					GPOS_ASSERT(false);
+			}
+		}
+
 		pdrgpcrNew->Append(new_colref);
+
 		if (nullptr != colref_mapping)
 		{
 			BOOL fInserted GPOS_ASSERTS_ONLY = colref_mapping->Insert(
 				GPOS_NEW(mp) ULONG(colref->Id()), new_colref);
 			GPOS_ASSERT(fInserted);
+		}
+
+		if (nullptr != consumer_mapping) {
+			BOOL fInserted GPOS_ASSERTS_ONLY = consumer_mapping->Insert(
+				GPOS_NEW(mp) ULONG(new_colref->Id()), colref);
+			GPOS_ASSERT(fInserted);
+		}
+
+		if (nullptr != producer_mapping) {
+			ULONG *producer_cid = GPOS_NEW(mp) ULONG(colref->Id());
+
+			const CColRefArray *crarray = producer_mapping->Find(producer_cid);
+			if (nullptr == crarray)
+			{
+				CColRefArray *crarray_new = GPOS_NEW(mp) CColRefArray(mp);
+				crarray_new->Append(new_colref);
+
+				BOOL fInserted GPOS_ASSERTS_ONLY =
+					producer_mapping->Insert(producer_cid, crarray_new);
+				GPOS_ASSERT(fInserted);
+			}
+			else
+			{
+				(const_cast<CColRefArray *>(crarray))
+					->Append(new_colref);
+			}
 		}
 	}
 
@@ -3855,9 +3911,9 @@ CUtils::PexprFuncElemExpr(CMemoryPool *mp, CMDAccessor *md_accessor,
 		CWStringConst(mp, (cast_func->Mdname().GetMDName())->GetBuffer());
 	mdid_func->AddRef();
 	cast_func->GetResultTypeMdid()->AddRef();
-	CScalarFunc *popCastScalarFunc =
-		GPOS_NEW(mp) CScalarFunc(mp, mdid_func, cast_func->GetResultTypeMdid(),
-								 typmod, pstrFunc, 1 /* Explicit Cast */, false /* funcvariadic */);
+	CScalarFunc *popCastScalarFunc = GPOS_NEW(mp)
+		CScalarFunc(mp, mdid_func, cast_func->GetResultTypeMdid(), typmod,
+					pstrFunc, 1 /* Explicit Cast */, false /* funcvariadic */);
 	mdid_elem_type->AddRef();
 	CExpression *pexprCaseTest = GPOS_NEW(mp)
 		CExpression(mp, GPOS_NEW(mp) CScalarCaseTest(mp, mdid_elem_type));

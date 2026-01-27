@@ -756,7 +756,7 @@ index_create(Relation heapRelation,
 			 Oid indexRelationId,
 			 Oid parentIndexRelid,
 			 Oid parentConstraintId,
-			 RelFileNodeId relFileNode,
+			 Oid relFileNode,
 			 IndexInfo *indexInfo,
 			 List *indexColNames,
 			 Oid accessMethodObjectId,
@@ -819,7 +819,7 @@ index_create_internal(Relation heapRelation,
                       Oid indexRelationId,
                       Oid parentIndexRelid,
                       Oid parentConstraintId,
-                      RelFileNodeId relFileNode,
+                      Oid relFileNode,
                       IndexInfo *indexInfo,
                       List *indexColNames,
                       Oid accessMethodObjectId,
@@ -1074,6 +1074,7 @@ index_create_internal(Relation heapRelation,
 	indexRelation->rd_rel->relispartition = OidIsValid(parentIndexRelid);
 	indexRelation->rd_rel->relisivm = false;
 	indexRelation->rd_rel->relisdynamic = false;
+	indexRelation->rd_rel->relmvrefcount = 0;
 
 	/*
 	 * store index's pg_class entry
@@ -1387,7 +1388,7 @@ index_create_internal(Relation heapRelation,
 		 *
 		 * We should bring it back in the future.
 		 */
-		index_build(heapRelation, indexRelation, indexInfo, false, indexInfo->ii_ParallelWorkers != -1);
+		index_build(heapRelation, indexRelation, indexInfo, false, indexInfo->ii_ParallelWorkers > 0);
 	}
 
 	/*

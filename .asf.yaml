@@ -54,12 +54,14 @@ github:
 
   # GitHub repository feature toggles
   features:
-    # Disable GitHub wiki as documentation is maintained elsewhere
-    wiki: false
+    # Enable GitHub wiki as documentation is maintained elsewhere
+    wiki: true
     # Enable GitHub Issues for bug tracking and feature requests
     issues: true
     # Enable GitHub Projects for project management and planning
     projects: true
+    # Enable GitHub Discussions for community discussions
+    discussions: true
 
   # Configure available merge strategies for pull requests
   enabled_merge_buttons:
@@ -78,27 +80,31 @@ github:
         # Require branches to be up to date before merging
         strict: true
 
-      # Required status checks that must pass
-      # Note: These contexts match the exact job names in GitHub
-      # Actions workflows. They do not include the workflow name as a
-      # prefix
-      contexts:
-        - check-skip
-        - Build Apache Cloudberry
-        - RPM Install Test Apache Cloudberry
-        - ic-good-opt-off
-        - ic-good-opt-on
-        - ic-expandshrink
-        - ic-singlenode
-        - ic-resgroup-v2
-        - ic-contrib
-        - ic-gpcontrib
-        - ic-fixme
-        - ic-isolation2
-        - ic-isolation2-crash
-        - ic-parallel-retrieve-cursor
-        - Generate Apache Cloudberry Build Report
-        - ic-cbdb-parallel
+        # Required status checks that must pass
+        # Note: These contexts match the exact job names in GitHub
+        # Actions workflows. They do not include the workflow name as a
+        # prefix
+        contexts:
+          - rat-check
+          - check-skip
+          - Build Apache Cloudberry RPM
+          - RPM Install Test Apache Cloudberry
+          - ic-good-opt-off
+          - ic-good-opt-on
+          - pax-ic-good-opt-off
+          - pax-ic-good-opt-on
+          - pax-ic-isolation2-opt-off
+          - pax-ic-isolation2-opt-on
+          - ic-expandshrink
+          - ic-singlenode
+          - ic-resgroup-v2
+          - ic-contrib
+          - ic-gpcontrib
+          - ic-fixme
+          - ic-isolation2
+          - ic-isolation2-crash
+          - ic-parallel-retrieve-cursor
+          - Generate Apache Cloudberry Build Report
 
       # Pull request review requirements
       required_pull_request_reviews:
@@ -112,6 +118,18 @@ github:
 
       # Don't require commits to be signed
       required_signatures: false
+
+      # Require conversation threads to be resolved
+      required_conversation_resolution: true
+
+    # Branch protection for REL_2_STABLE release branch
+    REL_2_STABLE:
+      # Pull request review requirements
+      required_pull_request_reviews:
+        # Require new reviews when new commits are pushed
+        dismiss_stale_reviews: false
+        # Require at least 2 approving reviews
+        required_approving_review_count: 2
 
       # Require conversation threads to be resolved
       required_conversation_resolution: true

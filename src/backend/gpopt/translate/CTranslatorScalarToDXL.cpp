@@ -542,7 +542,7 @@ CTranslatorScalarToDXL::CreateScalarCmpFromOpExpr(
 	const CWStringConst *str = GetDXLArrayCmpType(mdid);
 
 	CDXLScalarComp *dxlop = GPOS_NEW(m_mp) CDXLScalarComp(
-		m_mp, mdid, GPOS_NEW(m_mp) CWStringConst(str->GetBuffer()));
+		m_mp, mdid, GPOS_NEW(m_mp) CWStringConst(m_mp, str->GetBuffer()));
 
 	// create the DXL node holding the scalar comparison operator
 	CDXLNode *dxlnode = GPOS_NEW(m_mp) CDXLNode(m_mp, dxlop);
@@ -592,7 +592,7 @@ CTranslatorScalarToDXL::TranslateOpExprToDXL(
 
 	CDXLScalarOpExpr *dxlop = GPOS_NEW(m_mp)
 		CDXLScalarOpExpr(m_mp, mdid, return_type_mdid,
-						 GPOS_NEW(m_mp) CWStringConst(str->GetBuffer()));
+						 GPOS_NEW(m_mp) CWStringConst(m_mp, str->GetBuffer()));
 
 	// create the DXL node holding the scalar opexpr
 	CDXLNode *dxlnode = GPOS_NEW(m_mp) CDXLNode(m_mp, dxlop);
@@ -702,7 +702,7 @@ CTranslatorScalarToDXL::CreateScalarArrayCompFromExpr(
 		m_mp,
 		GPOS_NEW(m_mp)
 			CMDIdGPDB(IMDId::EmdidGeneral, scalar_array_op_expr->opno),
-		GPOS_NEW(m_mp) CWStringConst(op_name->GetBuffer()), type);
+		GPOS_NEW(m_mp) CWStringConst(m_mp, op_name->GetBuffer()), type);
 
 	// create the DXL node holding the scalar opexpr
 	CDXLNode *dxlnode = GPOS_NEW(m_mp) CDXLNode(m_mp, dxlop);
@@ -1425,7 +1425,8 @@ CTranslatorScalarToDXL::TranslateAggrefToDXL(
 {
 	GPOS_ASSERT(IsA(expr, Aggref));
 	const Aggref *aggref = (Aggref *) expr;
-	BOOL is_distinct = false;
+	BOOL is_distinct;
+	BOOL is_agg_star;
 
 	if (aggref->aggorder != NIL && GPOS_FTRACE(EopttraceDisableOrderedAgg))
 	{
@@ -1435,10 +1436,8 @@ CTranslatorScalarToDXL::TranslateAggrefToDXL(
 				"Ordered aggregates disabled. Enable by setting optimizer_enable_orderedagg=on"));
 	}
 
-	if (aggref->aggdistinct)
-	{
-		is_distinct = true;
-	}
+	is_distinct = aggref->aggdistinct;
+	is_agg_star = aggref->aggstar;
 
 	/*
 	 * We shouldn't see any partial aggregates in the parse tree, they're produced
@@ -1486,7 +1485,7 @@ CTranslatorScalarToDXL::TranslateAggrefToDXL(
 
 	CDXLScalarAggref *aggref_scalar = GPOS_NEW(m_mp) CDXLScalarAggref(
 		m_mp, agg_mdid, resolved_ret_type, is_distinct, agg_stage,
-		CTranslatorUtils::GetAggKind(aggref->aggkind), aggargtypes_values);
+		CTranslatorUtils::GetAggKind(aggref->aggkind), aggargtypes_values, is_agg_star);
 
 	// create the DXL node holding the scalar aggref
 	CDXLNode *dxlnode = GPOS_NEW(m_mp) CDXLNode(m_mp, aggref_scalar);

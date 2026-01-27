@@ -1596,7 +1596,7 @@ CTestUtils::PexprPrjElemWithSum(CMemoryPool *mp, CColRef *colref)
 		GPOS_NEW(mp) CWStringConst(GPOS_WSZ_LIT("sum"));
 	CExpression *pexprScalarAgg = CUtils::PexprAggFunc(
 		mp, pmdidSumAgg, pstrAggFunc, colref, false /*is_distinct*/,
-		EaggfuncstageGlobal /*eaggfuncstage*/, false /*fSplit*/
+		EaggfuncstageGlobal /*eaggfuncstage*/, false /*fSplit*/, false /*is_agg_star*/
 	);
 
 	// map a computed column to SUM expression
@@ -2272,7 +2272,7 @@ CTestUtils::PexprLogicalSequenceProject(CMemoryPool *mp, OID oidFunc,
 	CWindowFrameArray *pdrgwf = GPOS_NEW(mp) CWindowFrameArray(mp);
 
 	CLogicalSequenceProject *popSeqProj = GPOS_NEW(mp) CLogicalSequenceProject(
-		mp,
+		mp, COperator::ESPType::EsptypeLocal,
 		GPOS_NEW(mp)
 			CDistributionSpecHashed(pdrgpexpr, true /*fNullsCollocated*/),
 		pdrgpos, pdrgwf);

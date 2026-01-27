@@ -563,8 +563,9 @@ typedef struct ViewOptions
  *      True iff relation(table) should run the code path as AO/CO
  */
 #define RelationIsNonblockRelation(relation) \
+	((relation)->rd_tableam && \
 	(RelationIsAppendOptimized(relation) || \
-	 RelationIsPax(relation))
+	 RelationIsPax(relation)))
 
 /*
  * RelationIsBitmapIndex
@@ -782,6 +783,8 @@ typedef struct ViewOptions
 #define RelationIsPopulated(relation) ((relation)->rd_rel->relispopulated)
 
 #define RelationIsIVM(relation) ((relation)->rd_rel->relisivm)
+
+#define RelationHasRelativeMV(relation) (((relation)->rd_rel->relmvrefcount) > 0)
 
 /*
  * RelationIsAccessibleInLogicalDecoding

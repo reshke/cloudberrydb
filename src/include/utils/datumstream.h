@@ -93,6 +93,7 @@ typedef struct DatumStreamRead
 	int64		blockFirstRowNum;
 	int64		blockFileOffset;
 	int			blockRowCount;
+	int			blockRowsProcessed;
 
 	AppendOnlyStorageRead ao_read;
 
@@ -209,10 +210,10 @@ datumstreamread_get(DatumStreamRead * acc, Datum *datum, bool *null)
 }
 
 extern int	datumstreamread_advancelarge(DatumStreamRead * ds);
-inline static int
+static pg_attribute_always_inline int
 datumstreamread_advance(DatumStreamRead * acc)
 {
-	if (acc->largeObjectState == DatumStreamLargeObjectState_None)
+	if (unlikely(acc->largeObjectState == DatumStreamLargeObjectState_None))
 	{
 		/*
 		 * Small objects are handled by the DatumStreamBlockRead module.
@@ -322,8 +323,9 @@ extern bool datumstreamread_find_block(DatumStreamRead * datumStream,
 extern void *datumstreamread_get_upgrade_space(DatumStreamRead *datumStream,
 											   size_t len);
 
+extern bool datumstreamread_block_info(DatumStreamRead * acc);
 /*
- * MPP-17061: make sure datumstream_read_block_info was called first for the CO block
+ * MPP-17061: make sure datumstreamread_block_info was called first for the CO block
  * before calling datumstreamread_block_content.
  */
 extern void datumstreamread_block_content(DatumStreamRead * acc);

@@ -76,9 +76,11 @@ CXformSplitGbAgg::CXformSplitGbAgg(CExpression *pexprPattern)
 CXform::EXformPromise
 CXformSplitGbAgg::Exfp(CExpressionHandle &exprhdl) const
 {
+	CLogicalGbAgg *popGbAgg = CLogicalGbAgg::PopConvert(exprhdl.Pop());
 	// do not split aggregate if it is a local aggregate, has distinct aggs, has outer references,
 	// or return types of Agg functions are ambiguous
-	if (!CLogicalGbAgg::PopConvert(exprhdl.Pop())->FGlobal() ||
+	if (!popGbAgg->FGlobal() ||
+		popGbAgg->FAggPushdown() || // current agg have been pushdown
 		0 < exprhdl.DeriveTotalDistinctAggs(1) ||
 		0 < exprhdl.DeriveOuterReferences()->Size() ||
 		nullptr == exprhdl.PexprScalarExactChild(1) ||
@@ -136,11 +138,11 @@ CXformSplitGbAgg::Transform(CXformContext *pxfctxt, CXformResult *pxfres,
 
 	CColRefArray *colref_array = popAgg->Pdrgpcr();
 
-	colref_array->AddRef();
 	CColRefArray *pdrgpcrLocal = colref_array;
-
 	colref_array->AddRef();
+
 	CColRefArray *pdrgpcrGlobal = colref_array;
+	colref_array->AddRef();
 
 	CColRefArray *pdrgpcrMinimal = popAgg->PdrgpcrMinimal();
 	if (nullptr != pdrgpcrMinimal)
@@ -209,7 +211,7 @@ CXformSplitGbAgg::PopulateLocalGlobalProjectList(
 			popScAggFunc->IsDistinct(), EaggfuncstageLocal, /* fGlobal */
 			true /* fSplit */, nullptr /* pmdidResolvedReturnType */,
 			EaggfunckindNormal, popScAggFunc->GetArgTypes(),
-			popScAggFunc->FRepSafe());
+			popScAggFunc->FRepSafe(), popScAggFunc->IsAggStar());
 
 		popScAggFunc->MDId()->AddRef();
 		popScAggFunc->GetArgTypes()->AddRef();
@@ -220,7 +222,7 @@ CXformSplitGbAgg::PopulateLocalGlobalProjectList(
 			false /* is_distinct */, EaggfuncstageGlobal, /* fGlobal */
 			true /* fSplit */, nullptr /* pmdidResolvedReturnType */,
 			EaggfunckindNormal, popScAggFunc->GetArgTypes(),
-			popScAggFunc->FRepSafe());
+			popScAggFunc->FRepSafe(), popScAggFunc->IsAggStar());
 
 		// determine column reference for the new project element
 		const IMDAggregate *pmdagg =

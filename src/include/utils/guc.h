@@ -261,6 +261,7 @@ extern bool Debug_print_parse;
 extern bool Debug_print_rewritten;
 extern bool Debug_pretty_print;
 extern bool Debug_print_ivm;
+extern bool Debug_print_aggref_in_explain;
 
 extern bool	Debug_print_full_dtm;
 extern bool	Debug_print_snapshot_dtm;
@@ -292,6 +293,8 @@ extern bool enable_parallel;
 extern bool enable_parallel_semi_join;
 extern bool enable_parallel_dedup_semi_join;
 extern bool enable_parallel_dedup_semi_reverse_join;
+extern bool	parallel_query_use_streaming_hashagg;
+extern bool gp_use_streaming_hashagg;
 extern int  gp_appendonly_insert_files;
 extern int  gp_appendonly_insert_files_tuples_range;
 extern int  gp_random_insert_segments;
@@ -464,6 +467,12 @@ extern bool create_restartpoint_on_ckpt_record_replay;
 #define OPTIMIZER_GPDB_CALIBRATED       1       /* GPDB's calibrated cost model */
 #define OPTIMIZER_GPDB_EXPERIMENTAL     2       /* GPDB's experimental cost model */
 
+/* optimizer cost model */
+#define OPTIMIZER_AGG_PDS_ALL_KEY             0
+#define OPTIMIZER_AGG_PDS_FIRST_KEY           1
+#define OPTIMIZER_AGG_PDS_MINIMAL_LEN_KEY     2
+#define OPTIMIZER_AGG_PDS_EXCLUDE_NON_FIXED   3
+
 
 /* Optimizer related gucs */
 extern bool	optimizer;
@@ -489,6 +498,8 @@ extern bool	optimizer_print_group_properties;
 extern bool	optimizer_print_optimization_context;
 extern bool optimizer_print_optimization_stats;
 extern bool optimizer_print_xform_results;
+extern bool optimizer_print_preprocess_result;
+extern bool optimizer_debug_cte;
 
 /* array of xforms disable flags */
 extern bool optimizer_xforms[OPTIMIZER_XFORMS_COUNT];
@@ -542,6 +553,8 @@ extern bool optimizer_enable_replicated_table;
 extern bool optimizer_enable_foreign_table;
 extern bool optimizer_enable_right_outer_join;
 extern bool optimizer_enable_query_parameter;
+extern bool optimizer_force_window_hash_agg;
+extern int optimizer_agg_pds_strategy;
 
 /* Optimizer plan enumeration related GUCs */
 extern bool optimizer_enumerate_plans;
@@ -580,6 +593,7 @@ extern bool optimizer_force_multistage_agg;
 extern bool optimizer_force_three_stage_scalar_dqa;
 extern bool optimizer_force_expanded_distinct_aggs;
 extern bool optimizer_force_agg_skew_avoidance;
+extern bool optimizer_force_split_window_function;
 extern bool optimizer_penalize_skew;
 extern bool optimizer_prune_computed_columns;
 extern bool optimizer_push_requirements_from_consumer_to_producer;
@@ -596,6 +610,7 @@ extern bool optimizer_enable_associativity;
 extern bool optimizer_enable_range_predicate_dpe;
 extern bool optimizer_enable_use_distribution_in_dqa;
 extern bool optimizer_enable_push_join_below_union_all;
+extern bool optimizer_disable_dynamic_table_scan;
 
 /* Analyze related GUCs for Optimizer */
 extern bool optimizer_analyze_root_partition;
@@ -644,6 +659,12 @@ extern int  gp_predicate_pushdown_sample_rows;
 extern bool gp_log_endpoints;
 
 extern bool gp_allow_date_field_width_5digits;
+
+/*
+ * Try to push the hash table of hash join node down to the scan node as
+ * bloom filter for performance.
+ */
+extern bool gp_enable_runtime_filter_pushdown;
 
 typedef enum
 {
@@ -841,6 +862,7 @@ extern void gpvars_assign_gp_resource_manager_policy(const char *newval, void *e
 extern const char *gpvars_show_gp_resource_manager_policy(void);
 extern const char *gpvars_assign_gp_resqueue_memory_policy(const char *newval, bool doit, GucSource source);
 extern const char *gpvars_show_gp_resqueue_memory_policy(void);
+extern bool gpvars_check_gp_resource_group_cgroup_parent(char **newval, void **extra, GucSource source);
 extern bool gpvars_check_statement_mem(int *newval, void **extra, GucSource source);
 extern bool gpvars_check_rg_query_fixed_mem(int *newval, void **extra, GucSource source);
 extern int guc_name_compare(const char *namea, const char *nameb);

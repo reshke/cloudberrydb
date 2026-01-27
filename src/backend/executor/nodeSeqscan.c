@@ -42,6 +42,7 @@
 #include "cdb/cdbvars.h"
 
 static TupleTableSlot *SeqNext(SeqScanState *node);
+static ScanKey ScanKeyListToArray(List *keys, int *num);
 
 /* ----------------------------------------------------------------
  *						Scan Support
@@ -71,13 +72,29 @@ SeqNext(SeqScanState *node)
 
 	if (scandesc == NULL)
 	{
+		int nkeys = 0;
+		ScanKey keys = NULL;
+
 		/*
-		* We reach here if the scan is not parallel, or if we're serially
-		* executing a scan that was planned to be parallel.
-		*/
+		 * Just when gp_enable_runtime_filter_pushdown enabled and
+		 * node->filter_in_seqscan is false means scankey need to be pushed to
+		 * AM.
+		 */
+		if (gp_enable_runtime_filter_pushdown && node->filter_in_seqscan && node->filters &&
+			(table_scan_flags(node->ss.ss_currentRelation) &
+			 (SCAN_SUPPORT_RUNTIME_FILTER)))
+		{
+			// pushdown runtime filter to AM
+			keys = ScanKeyListToArray(node->filters, &nkeys);
+		}
+
+		/*
+		 * We reach here if the scan is not parallel, or if we're serially
+		 * executing a scan that was planned to be parallel.
+		 */
 		scandesc = table_beginscan_es(node->ss.ss_currentRelation,
 									  estate->es_snapshot,
-									  0, NULL,
+									  nkeys, keys,
 									  NULL,
 									  &node->ss.ps);
 		node->ss.ss_currentScanDesc = scandesc;
@@ -86,8 +103,23 @@ SeqNext(SeqScanState *node)
 	/*
 	 * get the next tuple from the table
 	 */
-	if (table_scan_getnextslot(scandesc, direction, slot))
-		return slot;
+	if (node->filter_in_seqscan && node->filters)
+	{
+		while (table_scan_getnextslot(scandesc, direction, slot))
+		{
+			// TODO: later pushdown bloom filter to AM
+			if (!PassByBloomFilter(&node->ss.ps, node->filters, slot))
+				continue;
+
+			return slot;
+		}
+	}
+	else
+	{
+		if (table_scan_getnextslot(scandesc, direction, slot))
+			return slot;
+	}
+
 	return NULL;
 }
 
@@ -190,6 +222,15 @@ ExecInitSeqScanForPartition(SeqScan *node, EState *estate,
 	 */
 	scanstate->ss.ps.qual =
 		ExecInitQual(node->plan.qual, (PlanState *) scanstate);
+
+	/*
+	 * check scan slot with bloom filters in seqscan node or not.
+	 */
+	if (gp_enable_runtime_filter_pushdown
+		&& !estate->useMppParallelMode)
+	{
+		scanstate->filter_in_seqscan = true;
+	}
 
 	return scanstate;
 }
@@ -363,4 +404,70 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 		scandesc = table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
 	}
 	node->ss.ss_currentScanDesc = scandesc;
+}
+
+/*
+ * Returns true if the element may be in the bloom filter.
+ */
+bool
+PassByBloomFilter(PlanState *ps, List *filters, TupleTableSlot *slot)
+{
+	ScanKey	sk;
+	Datum	val;
+	bool	isnull;
+	ListCell *lc;
+	bloom_filter *blm_filter;
+
+	/*
+	 * Mark that the pushdown runtime filter is actually taking effect.
+	 */
+	if (ps->instrument && !ps->instrument->prf_work && list_length(filters))
+		ps->instrument->prf_work = true;
+
+	foreach (lc, filters)
+	{
+		sk = lfirst(lc);
+		if (sk->sk_flags != SK_BLOOM_FILTER)
+			continue;
+
+		val = slot_getattr(slot, sk->sk_attno, &isnull);
+		if (isnull)
+			continue;
+
+		blm_filter = (bloom_filter *)DatumGetPointer(sk->sk_argument);
+		if (bloom_lacks_element(blm_filter, (unsigned char *)&val, sizeof(Datum)))
+		{
+			InstrCountFilteredPRF(ps, 1);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+ * Convert the list of ScanKey to the array, and append an emtpy ScanKey as
+ * the end flag of the array.
+ */
+static ScanKey
+ScanKeyListToArray(List *keys, int *num)
+{
+	ScanKey sk;
+
+	if (list_length(keys) == 0)
+		return NULL;
+
+	Assert(num);
+	*num = list_length(keys);
+
+	sk = (ScanKey)palloc(sizeof(ScanKeyData) * (*num + 1));
+	for (int i = 0; i < *num; ++i)
+		memcpy(&sk[i], list_nth(keys, i), sizeof(ScanKeyData));
+
+	/*
+	 * SK_EMPYT means the end of the array of the ScanKey
+	 */
+	sk[*num].sk_flags = SK_EMPYT;
+
+	return sk;
 }

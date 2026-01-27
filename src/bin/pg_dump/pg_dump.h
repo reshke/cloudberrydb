@@ -77,7 +77,6 @@ typedef enum
 	DO_BLOB,
 	DO_BLOB_DATA,
 	DO_EXTPROTOCOL,
-	DO_TYPE_STORAGE_OPTIONS,
 	DO_PRE_DATA_BOUNDARY,
 	DO_POST_DATA_BOUNDARY,
 	DO_EVENT_TRIGGER,
@@ -178,12 +177,12 @@ typedef struct _typeInfo
 	 * result of format_type(), which will be quoted if needed, and might be
 	 * schema-qualified too.
 	 */
-	char	   *ftypname;
-	char	   *rolname;		/* name of owner, or empty string */
-	char	   *typacl;
-	char	   *rtypacl;
-	char	   *inittypacl;
-	char	   *initrtypacl;
+	char		*ftypname;
+	char		*rolname;		/* name of owner, or empty string */
+	char		*typacl;
+	char		*rtypacl;
+	char		*inittypacl;
+	char		*initrtypacl;
 	Oid			typelem;
 	Oid			typrelid;
 	char		typrelkind;		/* 'r', 'v', 'c', etc */
@@ -196,32 +195,8 @@ typedef struct _typeInfo
 	/* If it's a domain, we store links to its constraints here: */
 	int			nDomChecks;
 	struct _constraintInfo *domChecks;
+	char		*typstorage; /* GPDB: store the type's encoding clause */
 } TypeInfo;
-
-typedef struct _typeCache
-{
-	DumpableObject dobj;
-
-	Oid			typnsp;
-
-	Oid			arraytypoid;
-	char	   *arraytypname;
-	Oid			arraytypnsp;
-} TypeCache;
-
-typedef struct _typeStorageOptions
-{
-	DumpableObject dobj;
-
-	/*
-	 * Note: dobj.name is the pg_type.typname entry.  format_type() might
-	 * produce something different than typname
-	 */
-	char     *typnamespace;
-	char     *typoptions; /* storage options */
-	char     *rolname;		/* name of owner, or empty string */
-} TypeStorageOptions;
-
 
 
 typedef struct _shellTypeInfo
@@ -351,6 +326,7 @@ typedef struct _tableInfo
 	bool		dummy_view;		/* view's real definition must be postponed */
 	bool		postponed_def;	/* matview must be postponed into post-data */
 	bool		ispartition;	/* is table a partition? */
+	bool		unsafe_partitions;	/* is it an unsafe partitioned table? */
 
 	/*
 	 * These fields are computed only if we decide the table is interesting
@@ -704,17 +680,6 @@ typedef struct _SubscriptionInfo
 } SubscriptionInfo;
 
 /*
- * We build an array of these with an entry for each object that is an
- * extension member according to pg_depend.
- */
-typedef struct _extensionMemberId
-{
-	CatalogId	catId;			/* tableoid+oid of some member object */
-	ExtensionInfo *ext;			/* owning extension */
-} ExtensionMemberId;
-
-extern const char *EXT_PARTITION_NAME_POSTFIX;
-/*
  *	common utility functions
  */
 
@@ -739,7 +704,7 @@ extern NamespaceInfo *findNamespaceByOid(Oid oid);
 extern ExtensionInfo *findExtensionByOid(Oid oid);
 extern PublicationInfo *findPublicationByOid(Oid oid);
 
-extern void setExtensionMembership(ExtensionMemberId *extmems, int nextmems);
+extern void recordExtensionMembership(CatalogId catId, ExtensionInfo *ext);
 extern ExtensionInfo *findOwningExtension(CatalogId catalogId);
 
 extern void parseOidArray(const char *str, Oid *array, int arraysize);
@@ -766,6 +731,7 @@ extern ConvInfo *getConversions(Archive *fout, int *numConversions);
 extern TableInfo *getTables(Archive *fout, int *numTables);
 extern void getOwnedSeqs(Archive *fout, TableInfo tblinfo[], int numTables);
 extern InhInfo *getInherits(Archive *fout, int *numInherits);
+extern void getPartitioningInfo(Archive *fout);
 extern void getIndexes(Archive *fout, TableInfo tblinfo[], int numTables);
 extern void getExtendedStatistics(Archive *fout);
 extern void getConstraints(Archive *fout, TableInfo tblinfo[], int numTables);
@@ -798,7 +764,6 @@ extern void getPublicationTables(Archive *fout, TableInfo tblinfo[],
 extern void getSubscriptions(Archive *fout);
 
 /* START MPP ADDITION */
-extern TypeStorageOptions *getTypeStorageOptions(Archive *fout, int *numTypes);
 extern ExtProtInfo *getExtProtocols(Archive *fout, int *numExtProtocols);
 extern BinaryUpgradeInfo *getBinaryUpgradeObjects(void);
 

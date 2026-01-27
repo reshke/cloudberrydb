@@ -116,9 +116,9 @@ static File	AORelOpenSegFileXlog(RelFileNode node, int32 segmentFileNum, int fil
 							 node.spcNode);
 
 	if (segmentFileNum == 0)
-		snprintf(path, MAXPGPATH, "%s/%lu", dbPath, node.relNode);
+		snprintf(path, MAXPGPATH, "%s/%u", dbPath, node.relNode);
 	else
-		snprintf(path, MAXPGPATH, "%s/%lu.%u", dbPath, node.relNode, segmentFileNum);
+		snprintf(path, MAXPGPATH, "%s/%u.%u", dbPath, node.relNode, segmentFileNum);
 	pfree(dbPath);
 
 	return PathNameOpenFile(path, fileFlags);
@@ -127,6 +127,7 @@ static File	AORelOpenSegFileXlog(RelFileNode node, int32 segmentFileNum, int fil
 static const f_smgr_ao smgrswao[] = {
 	/* regular file */
 	{
+		.smgr_create_ao = mdcreate_ao,
 		.smgr_FileClose = FileClose,
 		.smgr_FileDiskSize = FileDiskSize,
 		.smgr_FileTruncate = FileTruncate,
@@ -206,10 +207,6 @@ SMgrImpl smgr_get_impl(const Relation rel)
 	if (RelationIsAppendOptimized(rel))
 	{
 		smgr_impl = SMGR_AO;
-	}
-	else if (RelationIsPax(rel))
-	{
-		smgr_impl = SMGR_PAX;
 	}
 	else
 	{
@@ -496,9 +493,16 @@ smgrcreate(SMgrRelation reln, ForkNumber forknum, bool isRedo)
  *		already because we are in a WAL replay sequence.
  */
 void
-smgrcreate_ao(RelFileNodeBackend rnode, int32 segmentFileNum, bool isRedo)
+smgrcreate_ao(const struct f_smgr_ao *smgr,
+				RelFileNodeBackend rnode,
+				int32 segmentFileNum, bool isRedo)
 {
-	mdcreate_ao(rnode, segmentFileNum, isRedo);
+	/* If we get there, check that provided smgr structure is sane.
+	 * First off all, outer Appendonly IO utilities should
+	 * pass valid smgr. Also, in-kernel smgr interface implementation
+	 * smgr_create_ao as mdcreate_ao, and extension should define its own. */
+	Assert(smgr != NULL && smgr->smgr_create_ao != NULL);
+	smgr->smgr_create_ao(rnode, segmentFileNum, isRedo);
 	if (file_create_hook)
 		(*file_create_hook)(rnode);
 }

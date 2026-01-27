@@ -19,6 +19,7 @@
 #include "access/xact.h"
 #include "libpq-fe.h"
 #include "libpq-int.h"
+#include "catalog/catalog.h"
 #include "cdb/cdbconn.h"
 #include "cdb/cdbgang.h"
 #include "cdb/cdbutil.h"
@@ -48,12 +49,18 @@
 #include "cdb/cdbdispatchresult.h"
 #include "cdb/cdbcopy.h"
 #include "executor/execUtils.h"
+#include "cdb/cdbpq.h"
+#include "libpq/pqformat.h"
 
 #define QUERY_STRING_TRUNCATE_SIZE (1024)
 
 extern bool Test_print_direct_dispatch_info;
 
 extern bool gp_print_create_gang_time;
+
+ExtendProtocolDataStore epd_storage = {0};
+ExtendProtocolData epd = &epd_storage;
+
 typedef struct ParamWalkerContext
 {
 	plan_tree_base_prefix base; /* Required prefix for
@@ -131,7 +138,7 @@ static SerializedParams *serializeParamsForDispatch(QueryDesc *queryDesc,
 													ParamExecData *execParams,
 													Bitmapset *sendParams);
 
-
+static List* process_epd_iud_internal(List* subtagdata);
 
 /*
  * Compose and dispatch the MPPEXEC commands corresponding to a plan tree
@@ -486,7 +493,8 @@ cdbdisp_dispatchCommandInternal(DispatchCommandQueryParms *pQueryParms,
 	 * To fix this issue, we should drop the idle reader gangs after each
 	 * utility statement which may modify the catalog table.
 	 */
-	ds->destroyIdleReaderGang = true;
+	if (system_relation_modified)
+		ds->destroyIdleReaderGang = true;
 
 	queryText = buildGpQueryString(pQueryParms, &queryTextLength);
 
@@ -859,6 +867,7 @@ buildGpQueryString(DispatchCommandQueryParms *pQueryParms,
 {
 	const char *command = pQueryParms->strCommand;
 	int			command_len;
+	int			is_hs_dispatch = IS_HOT_STANDBY_QD() ? 1 : 0;
 	const char *plantree = pQueryParms->serializedPlantree;
 	int			plantree_len = pQueryParms->serializedPlantreelen;
 	const char *sddesc = pQueryParms->serializedQueryDispatchDesc;
@@ -913,6 +922,7 @@ buildGpQueryString(DispatchCommandQueryParms *pQueryParms,
 		sizeof(outerUserId) /* outerUserIsSuper */ +
 		sizeof(currentUserId) +
 		sizeof(n32) * 2 /* currentStatementStartTimestamp */ +
+		sizeof(is_hs_dispatch) +
 		sizeof(command_len) +
 		sizeof(plantree_len) +
 		sizeof(sddesc_len) +
@@ -967,6 +977,10 @@ buildGpQueryString(DispatchCommandQueryParms *pQueryParms,
 	n32 = htonl(n32);
 	memcpy(pos, &n32, sizeof(n32));
 	pos += sizeof(n32);
+
+	tmp = htonl(is_hs_dispatch);
+	memcpy(pos, &tmp, sizeof(is_hs_dispatch));
+	pos += sizeof(is_hs_dispatch);
 
 	tmp = htonl(command_len);
 	memcpy(pos, &tmp, sizeof(command_len));
@@ -1675,4 +1689,173 @@ findParamType(List *params, int paramid)
 	}
 
 	return InvalidOid;
+}
+
+/*
+ * ConsumeExtendProtocolData
+ * Return the data(list of char*) belonging to the subtag
+ * and callers could use it in their own way.
+ * The original data will be freed, and marked as consumed.
+ */
+List *
+ConsumeExtendProtocolData(ExtendProtocolSubTag subtag)
+{
+	List 	*subtagdata = NIL;
+	ListCell *lc;
+
+	Assert(epd);
+	Assert(subtag < EP_TAG_MAX);
+
+#ifdef FAULT_INJECTOR
+	if (SIMPLE_FAULT_INJECTOR("consume_extend_protocol_data") == FaultInjectorTypeSkip)
+	{
+		return NIL;
+	}
+#endif
+
+	/* The subtag data has been consumed. */
+	if ((epd->consumed_bitmap & (1 << subtag)) == 0)
+		return NIL;
+
+	foreach (lc, epd->subtagdata[subtag])
+	{
+		StringInfo buf = (StringInfo) lfirst(lc);
+
+		char* data = palloc0(buf->len);
+		memcpy(data, buf->data, buf->len);
+		subtagdata = lappend(subtagdata, data);
+		pfree(buf->data);
+	}
+
+	/* Cleanup and mark subtag consumed. */
+	list_free_deep(epd->subtagdata[subtag]);
+	epd->subtagdata[subtag] = NIL;
+	epd->consumed_bitmap &= ~(1 << subtag);
+	return subtagdata;
+}
+
+void
+ConsumeAndProcessExtendProtocolData_IUD(List **inserted, List **updated, List **deleted)
+{
+	List *ilist = NIL;
+	List *ulist = NIL;
+	List *dlist = NIL;
+
+	ilist = ConsumeExtendProtocolData(EP_TAG_I);
+	ulist = ConsumeExtendProtocolData(EP_TAG_U);
+	dlist = ConsumeExtendProtocolData(EP_TAG_D);
+
+	*inserted = process_epd_iud_internal(ilist);
+	*updated = process_epd_iud_internal(ulist);
+	*deleted = process_epd_iud_internal(dlist);
+
+	list_free_deep(ilist);
+	list_free_deep(ulist);
+	list_free_deep(dlist);
+	return;
+}
+
+static List*
+process_epd_iud_internal(List* subtagdata)
+{
+	List		*res = NIL;
+	ListCell 	*lc;
+	int 		count;
+
+	foreach (lc, subtagdata)
+	{
+		char *data = (char *) lfirst(lc);
+		memcpy(&count, data, sizeof(int));
+		data += sizeof(int);
+		for (int i = 0; i < count; i++)
+		{
+			Oid relid;
+			memcpy(&relid, data, sizeof(Oid));
+			data += sizeof(Oid);
+			res = list_append_unique_oid(res, relid);
+		}
+	}
+	return res;
+}
+
+/*
+ * Handle extend protocol aside from upstream.
+ * Process subtag and store everything under TopTransactionMemoryContext.
+ * There could be multiple subtags in one run.
+ * Do not error here, let libpq work.
+ */
+bool HandleExtendProtocol(PGconn *conn)
+{
+	int		subtag;
+	int		length;
+	if (Gp_role != GP_ROLE_DISPATCH)
+		return false;
+
+	for (;;)
+	{
+		if (pqGetInt(&subtag, 4, conn))
+			return false;
+
+		if (subtag < 0 || subtag > EP_TAG_MAX)
+			return false;
+
+		if (EP_TAG_MAX == subtag)
+			/* End of this run. */
+			return true;
+
+		if (pqGetInt(&length, 4, conn))
+			return false;
+
+		MemoryContext oldctx = MemoryContextSwitchTo(TopTransactionContext);
+		char* data = palloc0(length);
+
+		if (pqGetnchar(data, length, conn))
+		{
+			MemoryContextSwitchTo(oldctx);
+			return false;
+		}
+		StringInfo buf = makeStringInfo();
+		/* Do not change the raw data, let caller process it. */
+		appendBinaryStringInfoNT(buf, data, length);
+		epd->subtagdata[subtag] = lappend(epd->subtagdata[subtag], buf);
+		MemoryContextSwitchTo(oldctx);
+		/* Mark subtag to be consumed. */
+		epd->consumed_bitmap |= 1 << subtag;
+	}
+}
+
+/*
+ * check_extend_protocol_data
+ * Check if all the subtag data are consumed when transaction is committed.
+ * Cleanup even there are unconsumed data to keep clean for the next run.
+ */
+void
+AtEOXact_ExtendProtocolData()
+{
+	for (int i = EP_TAG_MAX - 1; i >= 0; i--)
+	{
+		if (epd->consumed_bitmap & (1 << i))
+		{
+			ereport(WARNING,
+					errmsg("Extend Protocol Data unconsumed, subtag: %d", i));
+			list_free_deep(epd->subtagdata[i]);
+		}
+		epd->subtagdata[i] = NIL;
+	}
+	epd->consumed_bitmap = 0;
+}
+
+/*
+ * AtAort_ExtendProtocolData
+ * Cleanup all the subtag data when transaction is aborted.
+ */
+void
+AtAort_ExtendProtocolData()
+{
+	for (int i = EP_TAG_MAX - 1; i >= 0; i--)
+	{
+		list_free_deep(epd->subtagdata[i]);
+		epd->subtagdata[i] = NIL;
+	}
+	epd->consumed_bitmap = 0;
 }

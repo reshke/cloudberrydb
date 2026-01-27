@@ -244,15 +244,16 @@ public:
 	static CScalarAggFunc *PopAggFunc(
 		CMemoryPool *mp, IMDId *pmdidAggFunc, const CWStringConst *pstrAggFunc,
 		BOOL is_distinct, EAggfuncStage eaggfuncstage, BOOL fSplit,
-		IMDId *
-			pmdidResolvedReturnType,  // return type to be used if original return type is ambiguous
-		EAggfuncKind aggkind, ULongPtrArray *argtypes, BOOL fRepSafe);
+		IMDId * pmdidResolvedReturnType,  // return type to be used if original return type is ambiguous
+		EAggfuncKind aggkind, ULongPtrArray *argtypes, BOOL fRepSafe,
+		BOOL is_agg_star);
 
 	// generate an aggregate function
 	static CExpression *PexprAggFunc(CMemoryPool *mp, IMDId *pmdidAggFunc,
 									 const CWStringConst *pstrAggFunc,
 									 const CColRef *colref, BOOL is_distinct,
-									 EAggfuncStage eaggfuncstage, BOOL fSplit);
+									 EAggfuncStage eaggfuncstage, BOOL fSplit,
+									 BOOL is_agg_star);
 
 	// generate a count(*) expression
 	static CExpression *PexprCountStar(CMemoryPool *mp);
@@ -288,7 +289,7 @@ public:
 
 	// generate a count(col) expression
 	static CExpression *PexprCount(CMemoryPool *mp, const CColRef *colref,
-								   BOOL is_distinct);
+								   BOOL is_distinct, BOOL is_agg_star);
 
 	// generate a min(col) expression
 	static CExpression *PexprMin(CMemoryPool *mp, CMDAccessor *md_accessor,
@@ -297,7 +298,8 @@ public:
 	// generate an aggregate expression
 	static CExpression *PexprAgg(CMemoryPool *mp, CMDAccessor *md_accessor,
 								 IMDType::EAggType agg_type,
-								 const CColRef *colref, BOOL is_distinct);
+								 const CColRef *colref, BOOL is_distinct,
+								 BOOL is_agg_star);
 
 	// generate a select expression
 	static CExpression *PexprLogicalSelect(CMemoryPool *mp, CExpression *pexpr,
@@ -318,12 +320,10 @@ public:
 											BOOL fNewComputedCol);
 
 	// generate a sequence project expression
-	static CExpression *PexprLogicalSequenceProject(CMemoryPool *mp,
-													CDistributionSpec *pds,
-													COrderSpecArray *pdrgpos,
-													CWindowFrameArray *pdrgpwf,
-													CExpression *pexpr,
-													CExpression *pexprPrjList);
+	static CExpression *PexprLogicalSequenceProject(
+		CMemoryPool *mp, COperator::ESPType sptype, CDistributionSpec *pds,
+		COrderSpecArray *pdrgpos, CWindowFrameArray *pdrgpwf,
+		CExpression *pexpr, CExpression *pexprPrjList);
 
 	// generate a projection of NULL constants
 	// to the map 'colref_mapping', and add the mappings to the colref_mapping map if not NULL
@@ -851,7 +851,9 @@ public:
 	// if the passed map is not null, mappings from old to copied variables are added to it
 	static CColRefArray *PdrgpcrCopy(
 		CMemoryPool *mp, CColRefArray *colref_array, BOOL fAllComputed = false,
-		UlongToColRefMap *colref_mapping = nullptr);
+		UlongToColRefMap *colref_mapping = nullptr, UlongToColRefMap *consumer_mapping = nullptr, 
+		UlongToColRefArrayMap *producer_mapping = nullptr,
+		BOOL check_usage = false);
 
 	// equality check between two arrays of column refs. Inputs can be NULL
 	static BOOL Equals(CColRefArray *pdrgpcrFst, CColRefArray *pdrgpcrSnd);

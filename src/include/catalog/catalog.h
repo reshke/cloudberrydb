@@ -50,11 +50,13 @@ extern bool IsSharedRelation(Oid relationId);
 
 extern Oid GetNewOidWithIndex(Relation relation, Oid indexId,
 							  AttrNumber oidcolumn);
-extern RelFileNodeId GetNewRelFileNode(Oid reltablespace, Relation pg_class,
+extern Oid GetNewRelFileNode(Oid reltablespace, Relation pg_class,
 							 char relpersistence);
 
 extern void reldir_and_filename(RelFileNode rnode, BackendId backend, ForkNumber forknum,
 					char **dir, char **filename);
 extern char *aorelpathbackend(RelFileNode node, BackendId backend, int32 segno);
+
+extern bool system_relation_modified;
 
 #endif							/* CATALOG_H */

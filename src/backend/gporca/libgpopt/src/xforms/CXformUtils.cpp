@@ -560,6 +560,7 @@ CXformUtils::PexprPushGbBelowJoin(CMemoryPool *mp, CExpression *pexpr)
 
 	pexprOuter->AddRef();
 	pexprPrjList->AddRef();
+	popGbAggNew->MarkAggPushdown();
 	CExpression *pexprNewGb =
 		GPOS_NEW(mp) CExpression(mp, popGbAggNew, pexprOuter, pexprPrjList);
 
@@ -2059,7 +2060,8 @@ CXformUtils::PexprWindowWithRowNumber(CMemoryPool *mp,
 		CExpression(mp, GPOS_NEW(mp) CScalarProjectList(mp), pexprProjElem);
 
 	CLogicalSequenceProject *popLgSequence =
-		GPOS_NEW(mp) CLogicalSequenceProject(mp, pds, pdrgpos, pdrgpwf);
+		GPOS_NEW(mp) CLogicalSequenceProject(
+			mp, COperator::ESPType::EsptypeGlobalOneStep, pds, pdrgpos, pdrgpwf);
 
 	pexprWindowChild->AddRef();
 	CExpression *pexprLgSequence = GPOS_NEW(mp)
@@ -3651,11 +3653,14 @@ CExpression *
 CXformUtils::PexprCTEConsumer(CMemoryPool *mp, ULONG ulCTEId,
 							  CColRefArray *colref_array)
 {
+	CExpression *pexpr;
 	CLogicalCTEConsumer *popConsumer =
 		GPOS_NEW(mp) CLogicalCTEConsumer(mp, ulCTEId, colref_array);
-	COptCtxt::PoctxtFromTLS()->Pcteinfo()->IncrementConsumers(ulCTEId);
 
-	return GPOS_NEW(mp) CExpression(mp, popConsumer);
+	pexpr = GPOS_NEW(mp) CExpression(mp, popConsumer);
+	COptCtxt::PoctxtFromTLS()->Pcteinfo()->IncrementConsumers(ulCTEId);
+	COptCtxt::PoctxtFromTLS()->Pcteinfo()->AddCTEConsumer(pexpr);
+	return pexpr;
 }
 
 
@@ -3744,7 +3749,7 @@ CXformUtils::PexprWinFuncAgg2ScalarAgg(CMemoryPool *mp,
 			popScWinFunc->IsDistinct(), EaggfuncstageGlobal,
 			false,	  // fSplit
 			nullptr,  // pmdidResolvedReturnType
-			EaggfunckindNormal, GPOS_NEW(mp) ULongPtrArray(mp), false),
+			EaggfunckindNormal, GPOS_NEW(mp) ULongPtrArray(mp), false, popScWinFunc->IsStarArg()),
 		pdrgpexprFullWinFuncArgs);
 }
 
@@ -4049,6 +4054,7 @@ CXformUtils::PexprGbAggOnCTEConsumer2Join(CMemoryPool *mp,
 				CExpression(mp, GPOS_NEW(mp) CLogicalCTEConsumer(
 									mp, ulCTEId, pdrgpcrNewConsumerOutput));
 			pcteinfo->IncrementConsumers(ulCTEId);
+			pcteinfo->AddCTEConsumer(pexprNewConsumer);
 
 			// fix Aggs arguments to use new consumer output column
 			UlongToColRefMap *colref_mapping = CUtils::PhmulcrMapping(

@@ -374,8 +374,13 @@ typedef struct ProjectionInfo
  *						attribute numbers of the "original" tuple and the
  *						attribute numbers of the "clean" tuple.
  *	  resultSlot:		tuple slot used to hold cleaned tuple.
+ *	  execFilterJunk:	function pointer to the function that will be used
+ *						to filter the junk attributes from the input tuple.
  * ----------------
  */
+typedef struct JunkFilter JunkFilter;
+typedef TupleTableSlot* (*ExecFilterJunkFunc)(JunkFilter *junkfilter,
+											  TupleTableSlot *slot);
 typedef struct JunkFilter
 {
 	NodeTag		type;
@@ -383,6 +388,7 @@ typedef struct JunkFilter
 	TupleDesc	jf_cleanTupType;
 	AttrNumber *jf_cleanMap;
 	TupleTableSlot *jf_resultSlot;
+	ExecFilterJunkFunc jf_execFilterJunkFunc;
 } JunkFilter;
 
 /*
@@ -1185,6 +1191,11 @@ extern uint64 PlanStateOperatorMemKB(const PlanState *ps);
 		if (((PlanState *)(node))->instrument) \
 			((PlanState *)(node))->instrument->nfiltered2 += (delta); \
 	} while(0)
+#define InstrCountFilteredPRF(node, delta) \
+	do { \
+		if (((PlanState *)(node))->instrument) \
+			((PlanState *)(node))->instrument->nfilteredPRF += (delta); \
+	} while(0)
 
 /*
  * EPQState is state for executing an EvalPlanQual recheck on a candidate
@@ -1344,6 +1355,10 @@ typedef struct ModifyTableState
 
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
 	struct TransitionCaptureState *mt_oc_transition_capture;
+
+	/* Record modified leaf relation(s) */
+	HTAB	*modified_leaf_relids;
+
 } ModifyTableState;
 
 /* ----------------
@@ -1543,6 +1558,10 @@ typedef struct SeqScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	Size		pscan_len;		/* size of parallel heap scan descriptor */
+
+	List		*filters;			/* the list of struct ScanKeyData */
+	bool		filter_in_seqscan;	/* check scan slot with runtime filters in
+                                       seqscan node or in am */
 } SeqScanState;
 
 /* ----------------
@@ -2210,6 +2229,9 @@ typedef struct DynamicSeqScanState
 	struct PartitionPruneState *as_prune_state; /* partition dynamic pruning state */
 	Bitmapset  *as_valid_subplans; /* used to determine partitions during dynamic pruning*/
 	bool 		did_pruning; /* flag that is set once dynamic pruning is performed */
+
+	/* runtime filter support */
+	List		*filters;			/* the list of struct ScanKeyData for runtime filters */
 } DynamicSeqScanState;
 
 /*
@@ -3068,6 +3090,20 @@ typedef struct RuntimeFilterState
 	bloom_filter *bf;
 } RuntimeFilterState;
 
+typedef struct AttrFilter
+{
+	bool			empty;  /* empty filter or not */
+	PlanState		*target;/* the node in where runtime filter will be used,
+							   target will be seqscan, see FindTargetAttr().
+							   in nodeHashjoin.c */
+	AttrNumber		rattno;	/* attr no in hash node */
+	AttrNumber		lattno;	/* if target is seqscan, attr no in relation */
+
+	bloom_filter	*blm_filter;
+	Datum			min;
+	Datum			max;
+} AttrFilter;
+
 /* ----------------
  *	 HashState information
  * ----------------
@@ -3103,6 +3139,8 @@ typedef struct HashState
 	struct ParallelHashJoinState *parallel_state;
 
 	Barrier	*sync_barrier;
+
+	List *filters;  /* the list of AttrFilter */
 } HashState;
 
 /* ----------------
