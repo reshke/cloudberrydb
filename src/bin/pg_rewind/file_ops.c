@@ -390,7 +390,7 @@ slurpFile(const char *datadir, const char *path, size_t *filesize)
 				 fullpath);
 
 	if (fstat(fd, &statbuf) < 0)
-		pg_fatal("could not open file \"%s\" for reading: %m",
+		pg_fatal("could not stat file \"%s\" for reading: %m",
 				 fullpath);
 
 	len = statbuf.st_size;
