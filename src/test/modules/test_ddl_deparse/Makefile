@@ -27,6 +27,7 @@ REGRESS = test_ddl_deparse \
 	alter_type_enum \
 	opfamily \
 	defprivs \
+	textsearch \
 	matviews
 
 REGRESS_OPTS += --init-file=$(top_builddir)/src/test/regress/init_file
