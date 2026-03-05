@@ -214,7 +214,7 @@ Where column_reference_storage_directive is:
 
   <variablelist>
    <varlistentry>
-    <term><literal>ADD COLUMN [ IF NOT EXISTS ]</literal></term>
+    <term><literal>ADD [ COLUMN ] [ IF NOT EXISTS ]</literal></term>
     <listitem>
      <para>
       This form adds a new column to the table, using the same syntax as
@@ -226,7 +226,7 @@ Where column_reference_storage_directive is:
    </varlistentry>
 
    <varlistentry>
-    <term><literal>DROP COLUMN [ IF EXISTS ]</literal></term>
+    <term><literal>DROP [ COLUMN ] [ IF EXISTS ]</literal></term>
     <listitem>
      <para>
       This form drops a column from a table.  Indexes and
