@@ -111,6 +111,14 @@ sub adjust_database_contents
 			'drop function if exists public.wait_pid(integer)');
 	}
 
+	# Before PostgreSQL 14, seg_out() printed the upper-bound certainty
+	# indicator incorrectly.  Remove that row before comparing upgrades.
+	if ($old_version < 14 && $dbnames{contrib_regression_seg})
+	{
+		_add_st($result, 'contrib_regression_seg',
+			"delete from test_seg where s = '4.6 .. ~7.0'");
+	}
+
 	# user table OIDs are gone from release 12 on
 	if ($old_version < 12)
 	{
