@@ -53,8 +53,8 @@
  */
 #define VALID_LONG_MESSAGE_TYPE(id) \
 	((id) == 'T' || (id) == 'D' || (id) == 'd' || (id) == 'V' || \
-	 (id) == 'E' || (id) == 'N' || (id) == 'A' || (id) == 'Y' || \
-	 (id) == 'y' || (id) == 'o' || (id) == 'e')
+	 (id) == 'E' || (id) == 'N' || (id) == 'A' || (id) == 't' || \
+	 (id) == 'Y' || (id) == 'y' || (id) == 'o' || (id) == 'e')
 
 
 static void handleSyncLoss(PGconn *conn, char id, int msgLength);
