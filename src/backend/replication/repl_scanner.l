@@ -187,6 +187,10 @@ MANIFEST_CHECKSUMS	{ return K_MANIFEST_CHECKSUMS; }
 					return IDENT;
 				}
 
+<xd>{xddouble}	{
+					addlitchar('"');
+				}
+
 <xd>{xdinside}  {
 					addlit(yytext, yyleng);
 				}
