@@ -56,7 +56,6 @@
 int
 pg_mkdir_p(char *path, int omode)
 {
-	struct stat sb;
 	mode_t		numask,
 				oumask;
 	int			last,
@@ -73,7 +72,7 @@ pg_mkdir_p(char *path, int omode)
 		if (p[0] == '/' && p[1] == '/')
 		{
 			/* network drive */
-			p = strstr(p + 2, "/");
+			p = strchr(p + 2, '/');
 			if (p == NULL)
 			{
 				errno = EINVAL;
@@ -119,37 +118,46 @@ pg_mkdir_p(char *path, int omode)
 		if (last)
 			(void) umask(oumask);
 
-		if (mkdir(path, last ? omode : S_IRWXU | S_IRWXG | S_IRWXO) == 0)
+		if (mkdir(path, last ? omode : S_IRWXU | S_IRWXG | S_IRWXO) < 0)
 		{
-			/* path does not pre-exist and is successfully created */
-		}
-		else if (errno == EEXIST)
-		{
-			/* path exists, double check it is a dir */
+			/*
+			 * If we got EEXIST because there's already a directory there,
+			 * don't complain.
+			 */
+#ifndef WIN32
+			int			save_errno = errno;
+			struct stat sb;
 
-			if (stat(path, &sb) < 0)
+			if (save_errno != EEXIST ||
+				stat(path, &sb) != 0 ||
+				!S_ISDIR(sb.st_mode))
+			{
+				/* Don't let stat replace mkdir's errno */
+				errno = save_errno;
+				retval = -1;
+				break;
+			}
+#else							/* WIN32 */
+			/*
+			 * On Windows, stat() opens a handle and can transiently fail on a
+			 * directory another process is concurrently creating.  Probe with
+			 * a path-based attribute query instead: it requests only
+			 * FILE_READ_ATTRIBUTES and is exempt from share-mode denial, so
+			 * it reliably sees a concurrently-created directory.  We assume
+			 * GetFileAttributes() won't change errno.
+			 */
+			DWORD		attr = GetFileAttributes(path);
+
+			if (errno != EEXIST ||
+				attr == INVALID_FILE_ATTRIBUTES ||
+				!(attr & FILE_ATTRIBUTE_DIRECTORY))
 			{
 				retval = -1;
 				break;
 			}
-			else if (!S_ISDIR(sb.st_mode))
-			{
-				/* path is not a dir at all */
-				if (last)
-					errno = EEXIST;
-				else
-					errno = ENOTDIR;
-				retval = -1;
-				break;
-			}
+#endif							/* WIN32 */
+		}
 
-			/* now we know that path is a dir */
-		}
-		else
-		{
-			retval = -1;
-			break;
-		}
 		if (!last)
 			*p = '/';
 	}
