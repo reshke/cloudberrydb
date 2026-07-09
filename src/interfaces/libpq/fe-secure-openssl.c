@@ -32,6 +32,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include <limits.h>
 
 #include "libpq-fe.h"
 #include "fe-auth.h"
