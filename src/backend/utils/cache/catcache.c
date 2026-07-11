@@ -895,6 +895,7 @@ RehashCatCache(CatCache *cp)
 }
 
 /*
+
  *		CatalogCacheInitializeCache
  *
  * This function does final initialization of a catcache: obtain the tuple
