@@ -75,6 +75,7 @@ extern void index_check_primary_key(Relation heapRel,
 #define	INDEX_CREATE_IF_NOT_EXISTS			(1 << 4)
 #define	INDEX_CREATE_PARTITIONED			(1 << 5)
 #define INDEX_CREATE_INVALID				(1 << 6)
+#define INDEX_CREATE_DEFERRABLE				(1 << 7)
 
 typedef Oid (*index_create_hook_type)(Relation heapRelation,
         const char *indexRelationName,
