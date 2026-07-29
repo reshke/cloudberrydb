@@ -495,6 +495,10 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 			break;
 		case WAIT_EVENT_DTX_RECOVERY:
 			event_name = "DtxRecovery";
+			break;
+		case WAIT_EVENT_WAL_RECEIVER_UPSTREAM_CATCHUP:
+			event_name = "WalReceiverUpstreamCatchup";
+			break;
 			/* no default case, so that compiler will warn */
 	}
 
