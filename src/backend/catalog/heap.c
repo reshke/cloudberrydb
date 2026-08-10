@@ -2854,6 +2854,9 @@ SetAttrMissing(Oid relid, char *attname, char *value)
  * the value - like in upstream - and returns it in
  * *missingval_p/missingIsNull_p. In the QE, the caller is expected to pass
  * the pre-computed values in missingval/missingIsNull.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types expr
+ * depends on.
  */
 Oid
 StoreAttrDefault(Relation rel, AttrNumber attnum,
@@ -3059,6 +3062,9 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
  * in the pg_class entry for the relation.
  *
  * The OID of the new constraint is returned.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types expr
+ * depends on.
  */
 static Oid
 StoreRelCheck(Relation rel, const char *ccname, Node *expr,
@@ -3318,6 +3324,13 @@ AddRelationNewConstraints(Relation rel,
 			 castNode(Const, expr)->constisnull))
 			continue;
 
+		/*
+		 * The below call to StoreAttrDefault() adds the dependencies on
+		 * types.  We are responsible for checking USAGE.
+		 */
+		if (!is_internal)
+			CheckUsageOnTypesInSingleRelExpr(expr, RelationGetRelid(rel), GetUserId());
+
 		/* If the DEFAULT is volatile we cannot use a missing value */
 		if (colDef->missingMode &&
 			contain_volatile_functions_after_planning((Expr *) expr))
@@ -3367,6 +3380,14 @@ AddRelationNewConstraints(Relation rel,
 			 */
 			expr = cookConstraint(pstate, cdef->raw_expr,
 								  RelationGetRelationName(rel));
+
+			/*
+			 * The below call to StoreRelCheck() calls CreateConstraintEntry(),
+			 * which adds the dependencies on types.  We are responsible for
+			 * checking USAGE.
+			 */
+			if (!is_internal)
+				CheckUsageOnTypesInSingleRelExpr(expr, RelationGetRelid(rel), GetUserId());
 		}
 		else
 		{
@@ -4425,12 +4446,16 @@ StorePartitionKey(Relation rel,
 	 * columns, i.e. they become internally dependent on the whole table.
 	 */
 	if (partexprs)
+	{
+		CheckUsageOnTypesInSingleRelExpr((Node *) partexprs, RelationGetRelid(rel),
+										 GetUserId());
 		recordDependencyOnSingleRelExpr(&myself,
 										(Node *) partexprs,
 										RelationGetRelid(rel),
 										DEPENDENCY_NORMAL,
 										DEPENDENCY_INTERNAL,
 										true /* reverse the self-deps */ );
+	}
 
 	/*
 	 * We must invalidate the relcache so that the next
