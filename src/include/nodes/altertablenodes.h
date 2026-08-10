@@ -97,6 +97,7 @@ typedef struct AlteredTableInfo
 	char	   *clusterOnIndex;	/* index to use for CLUSTER */
 	List	   *changedStatisticsOids;	/* OIDs of statistics to rebuild */
 	List	   *changedStatisticsDefs;	/* string definitions of same */
+	List	   *changedStatisticsOwners;	/* owners of same */
 
 	/*
 	 * Saved before/constraint list(list of list) in transformAlterTableStmt.

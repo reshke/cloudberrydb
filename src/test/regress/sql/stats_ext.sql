@@ -53,6 +53,8 @@ CREATE STATISTICS tst ON (x || 'x'), (x || 'x'), (y + 1), (x || 'x'), (x || 'x')
 CREATE STATISTICS tst ON (x || 'x'), (x || 'x'), y FROM ext_stats_test;
 CREATE STATISTICS tst (unrecognized) ON x, y FROM ext_stats_test;
 -- unsupported targets
+CREATE STATISTICS tst ON x, y FROM ext_stats_test, ext_stats_test;
+CREATE STATISTICS tst ON x, y FROM ext_stats_test, (SELECT * FROM ext_stats_test) AS foo;
 CREATE STATISTICS tst ON a FROM (VALUES (x)) AS foo;
 CREATE STATISTICS tst ON a FROM foo NATURAL JOIN bar;
 CREATE STATISTICS tst ON a FROM (SELECT * FROM ext_stats_test) AS foo;
@@ -1798,3 +1800,21 @@ CREATE STATISTICS s1 (dependencies) ON col1, col2 FROM tbl_issue1293;
 -- Trigger extended stats collection
 ANALYZE tbl_issue1293;
 DROP TABLE tbl_issue1293;
+
+-- CREATE STATISTICS checks for the owner
+CREATE ROLE regress_relowner;
+CREATE ROLE regress_stxowner;
+CREATE TABLE stats_ext_tbl (a int, b int);
+ALTER TABLE stats_ext_tbl OWNER TO regress_relowner;
+CREATE STATISTICS tst ON a, b FROM stats_ext_tbl;
+ALTER STATISTICS tst OWNER TO regress_stxowner;
+SELECT stxowner::regrole FROM pg_statistic_ext WHERE stxname = 'tst';
+
+-- re-creating statistics via ALTER TABLE preserve the statistics owner.
+ALTER TABLE stats_ext_tbl ALTER COLUMN a TYPE bigint;
+SELECT stxowner::regrole FROM pg_statistic_ext WHERE stxname = 'tst';
+
+-- Tidy up
+DROP TABLE stats_ext_tbl;
+DROP ROLE regress_relowner;
+DROP ROLE regress_stxowner;
