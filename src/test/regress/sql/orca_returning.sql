@@ -1,0 +1,62 @@
+-- Test UPDATE/DELETE/INSERT RETURNING through Orca optimizer.
+-- Before this fix, Orca always fell back to the GPDB planner for any DML
+-- with a RETURNING clause. This test verifies that Orca now plans DML
+-- RETURNING directly (no fallback) and produces correct results.
+
+-- start_ignore
+CREATE SCHEMA orca_returning;
+SET search_path to orca_returning;
+-- end_ignore
+
+-- Enable fallback tracing to detect any unexpected fallbacks.
+set optimizer_trace_fallback = on;
+
+-- Non-partitioned heap table: Orca can plan DML on this.
+CREATE TABLE ret_t (id int4, val int4, name text) DISTRIBUTED BY (id);
+INSERT INTO ret_t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (4, 40, 'd');
+
+-- UPDATE RETURNING: simple column references
+UPDATE ret_t SET val = val + 1 WHERE id = 1 RETURNING id, val, name;
+
+-- UPDATE RETURNING: expression in RETURNING
+UPDATE ret_t SET val = val * 2 WHERE id = 2 RETURNING id, val * 10 AS tenval;
+
+-- UPDATE RETURNING: all columns
+UPDATE ret_t SET name = 'cc' WHERE id = 3 RETURNING *;
+
+-- DELETE RETURNING
+DELETE FROM ret_t WHERE id = 4 RETURNING id, name;
+
+-- INSERT RETURNING
+INSERT INTO ret_t VALUES (5, 50, 'e') RETURNING id, val;
+
+-- Verify final state
+SELECT * FROM ret_t ORDER BY id;
+
+-- Test with a table that has a dropped column (dropped columns must not
+-- break RETURNING column mapping).
+CREATE TABLE ret_drop (a int, b int, c int) DISTRIBUTED BY (a);
+INSERT INTO ret_drop VALUES (1, 2, 3);
+ALTER TABLE ret_drop DROP COLUMN b;
+UPDATE ret_drop SET c = 30 WHERE a = 1 RETURNING *;
+DELETE FROM ret_drop WHERE a = 1 RETURNING a, c;
+
+-- Test UPDATE RETURNING that changes the distribution key (split update).
+-- Orca does not support RETURNING with split updates yet, so this should
+-- fall back to the GPDB planner.
+-- start_matchsubs
+-- m/^INFO.*GPORCA.*falling/
+-- s/^INFO.*GPORCA.*falling/INFO:  GPORCA fallback (expected)/
+-- m/^DETAIL.*Falling/
+-- s/^DETAIL.*/DETAIL:  Expected fallback for split update RETURNING/
+-- end_matchsubs
+CREATE TABLE ret_dist (id int4, v int4) DISTRIBUTED BY (id);
+INSERT INTO ret_dist VALUES (1, 100), (2, 200);
+UPDATE ret_dist SET id = id + 10 WHERE v = 100 RETURNING id, v;
+SELECT * FROM ret_dist ORDER BY id;
+
+-- Cleanup
+DROP TABLE ret_t;
+DROP TABLE ret_drop;
+DROP TABLE ret_dist;
+DROP SCHEMA orca_returning;

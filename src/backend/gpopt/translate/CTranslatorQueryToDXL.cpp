@@ -642,13 +642,6 @@ CTranslatorQueryToDXL::TranslateSelectQueryToDXL()
 		}
 	}
 
-	// RETURNING is not supported yet.
-	if (m_query->returningList)
-	{
-		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
-				   GPOS_WSZ_LIT("RETURNING clause"));
-	}
-
 	// ON CONFLICT is not supported yet.
 	if (m_query->onConflict)
 	{

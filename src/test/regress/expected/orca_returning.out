@@ -1,0 +1,78 @@
+CREATE SCHEMA
+SET
+SET
+CREATE TABLE
+INSERT 0 4
+ id | val | name 
+----+-----+------
+  1 |  11 | a
+(1 row)
+
+UPDATE 1
+ id | tenval 
+----+--------
+  2 |    400
+(1 row)
+
+UPDATE 1
+ id | val | name 
+----+-----+------
+  3 |  30 | cc
+(1 row)
+
+UPDATE 1
+ id | name 
+----+------
+  4 | d
+(1 row)
+
+DELETE 1
+ id | val 
+----+-----
+  5 |  50
+(1 row)
+
+INSERT 0 1
+ id | val | name 
+----+-----+------
+  1 |  11 | a
+  2 |  40 | b
+  3 |  30 | cc
+  5 |  50 | e
+(4 rows)
+
+CREATE TABLE
+INSERT 0 1
+ALTER TABLE
+ a | c  
+---+----
+ 1 | 30
+(1 row)
+
+UPDATE 1
+ a | c  
+---+----
+ 1 | 30
+(1 row)
+
+DELETE 1
+CREATE TABLE
+INSERT 0 2
+INFO:  GPORCA fallback (expected)
+DETAIL:  Expected fallback for split update RETURNING
+ id |  v  
+----+-----
+ 11 | 100
+(1 row)
+
+UPDATE 1
+ id |  v  
+----+-----
+  2 | 200
+ 11 | 100
+(2 rows)
+
+DROP TABLE
+DROP TABLE
+DROP TABLE
+DROP SCHEMA

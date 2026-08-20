@@ -409,6 +409,10 @@ optimize_query(Query *parse, int cursorOptions, ParamListInfo boundParams, Optim
 	result->stmt_location = parse->stmt_location;
 	result->stmt_len = parse->stmt_len;
 
+	/* RETURNING support: set hasReturning if the original query had a returningList */
+	if (parse->returningList != NIL)
+		result->hasReturning = true;
+
 	return result;
 }
 

@@ -255,6 +255,13 @@ CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlnode,
 
 	planned_stmt->commandType = m_cmd_type;
 
+	// RETURNING support: set hasReturning if the original query had a
+	// returningList. The returningLists are populated in TranslateDXLDml.
+	if (nullptr != orig_query && nullptr != orig_query->returningList)
+	{
+		planned_stmt->hasReturning = true;
+	}
+
 	planned_stmt->resultRelations = m_result_rel_list;
 	planned_stmt->intoPolicy = m_dxl_to_plstmt_context->GetDistributionPolicy();
 
@@ -5307,6 +5314,14 @@ CTranslatorDXLToPlStmt::TranslateDXLDml(
 	BOOL isSplit = phy_dml_dxlop->FSplit();
 	List *updateCols = NIL;
 
+	{
+		Query *oq = m_dxl_to_plstmt_context->m_orig_query;
+		fprintf(stderr, "RETURNING_DEBUG2: orig_query=%p returningList=%p cmdType=%d\n",
+				(void*)oq, oq ? (void*)oq->returningList : nullptr,
+				oq ? (int)oq->commandType : -1);
+		fflush(stderr);
+	}
+
 	switch (phy_dml_dxlop->GetDmlOpType())
 	{
 		case gpdxl::Edxldmldelete:
@@ -5484,7 +5499,93 @@ CTranslatorDXLToPlStmt::TranslateDXLDml(
 	plan->targetlist = NIL;
 	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
 
+	// RETURNING support: if the original query has a returningList, attach it
+	// to the ModifyTable node. Orca does not optimize the RETURNING expressions;
+	// they are post-processed as a projection over the modified tuple by the
+	// executor. We copy the returningList from the original query (which lives
+	// in the Orca memory pool) into the GPDB-owned PlannedStmt.
+	Query *orig_query = m_dxl_to_plstmt_context->m_orig_query;
+	BOOL hasReturning = (nullptr != orig_query && nullptr != orig_query->returningList);
+
+	// Split updates with RETURNING on distributed tables are not yet
+	// supported through Orca. Fall back to the GPDB planner.
+	if (hasReturning && m_is_tgt_tbl_distributed && isSplit &&
+		m_cmd_type == CMD_UPDATE)
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+				   GPOS_WSZ_LIT("RETURNING with split update"));
+	}
+
+	if (hasReturning)
+	{
+		List *returningList = (List *) gpdb::CopyObject(
+			(Node *) orig_query->returningList);
+		dml->returningLists = ListMake1(returningList);
+		// The visible plan targetlist is set to the first RETURNING list
+		// (for EXPLAIN; the executor ignores plan targetlist for
+		// ModifyTable and uses returningLists instead).
+		plan->targetlist = (List *) gpdb::CopyObject(
+			(Node *) returningList);
+	}
+
 	SetParamIds(plan);
+
+	// RETURNING support: if RETURNING is present and the target table is
+	// distributed, wrap the ModifyTable in a Gather Motion to bring
+	// RETURNING results back to the coordinator. Orca doesn't add a Motion
+	// for DML, so we do it here where we have slice context.
+	// Note: split updates (distribution key change) are not yet supported
+	// with RETURNING through Orca; they fall back to the GPDB planner.
+	if (hasReturning && m_is_tgt_tbl_distributed &&
+		!(m_cmd_type == CMD_UPDATE && isSplit))
+	{
+		PlanSlice *recvslice = m_dxl_to_plstmt_context->GetCurrentSlice();
+
+		// Create a new send slice for the segment side
+		PlanSlice *sendslice = (PlanSlice *) gpdb::GPDBAlloc(sizeof(PlanSlice));
+		memset(sendslice, 0, sizeof(PlanSlice));
+		sendslice->sliceIndex = m_dxl_to_plstmt_context->AddSlice(sendslice);
+		sendslice->parentIndex = recvslice->sliceIndex;
+		sendslice->gangType = GANGTYPE_PRIMARY_WRITER;
+		sendslice->numsegments = m_num_of_segments;
+		sendslice->segindex = 0;
+		sendslice->directDispatch.isDirectDispatch = false;
+		sendslice->directDispatch.contentIds = NIL;
+		sendslice->directDispatch.haveProcessedAnyCalculations = false;
+
+		// Create the Gather Motion node
+		Motion *motion = MakeNode(Motion);
+		Plan *motion_plan = &(motion->plan);
+		motion_plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+		motion_plan->startup_cost = plan->startup_cost;
+		motion_plan->total_cost = plan->total_cost;
+		motion_plan->plan_rows = plan->plan_rows;
+		motion_plan->plan_width = plan->plan_width;
+		motion_plan->targetlist = (List *) gpdb::CopyObject((Node *) plan->targetlist);
+		motion_plan->qual = NIL;
+		motion_plan->lefttree = (Plan *) dml;
+		motion_plan->righttree = NULL;
+		motion->motionID = sendslice->sliceIndex;
+		motion->numSortCols = 0;
+		motion->sortColIdx = NULL;
+		motion->sortOperators = NULL;
+		motion->collations = NULL;
+		motion->nullsFirst = NULL;
+		motion->sendSorted = false;
+
+		// The ModifyTable runs in the send slice (on segments)
+		m_dxl_to_plstmt_context->SetCurrentSlice(sendslice);
+
+		SetParamIds(motion_plan);
+
+		// cleanup
+		child_contexts->Release();
+
+		// translate operator costs
+		TranslatePlanCosts(dml_dxlnode, motion_plan);
+
+		return (Plan *) motion;
+	}
 
 	if (m_is_tgt_tbl_distributed)
 	{
