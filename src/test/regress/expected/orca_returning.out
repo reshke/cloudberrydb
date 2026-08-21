@@ -3,12 +3,30 @@ SET
 SET
 CREATE TABLE
 INSERT 0 4
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.03 rows=1 width=1)
+   ->  Update on ret_t  (cost=0.00..0.00 rows=0 width=0)
+         ->  Seq Scan on ret_t  (cost=0.00..431.00 rows=1 width=26)
+               Filter: (id = 1)
+ Optimizer: GPORCA
+(5 rows)
+
  id | val | name 
 ----+-----+------
   1 |  11 | a
 (1 row)
 
 UPDATE 1
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.03 rows=1 width=1)
+   ->  Update on ret_t  (cost=0.00..0.00 rows=0 width=0)
+         ->  Seq Scan on ret_t  (cost=0.00..431.00 rows=1 width=26)
+               Filter: (id = 2)
+ Optimizer: GPORCA
+(5 rows)
+
  id | tenval 
 ----+--------
   2 |    400
@@ -21,6 +39,15 @@ UPDATE 1
 (1 row)
 
 UPDATE 1
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=0.00..431.02 rows=1 width=1)
+   ->  Delete on ret_t  (cost=0.00..0.00 rows=0 width=0)
+         ->  Seq Scan on ret_t  (cost=0.00..431.00 rows=1 width=14)
+               Filter: (id = 4)
+ Optimizer: GPORCA
+(5 rows)
+
  id | name 
 ----+------
   4 | d
