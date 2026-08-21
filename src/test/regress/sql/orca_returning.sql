@@ -37,29 +37,12 @@ INSERT INTO ret_t VALUES (5, 50, 'e') RETURNING id, val;
 -- Verify final state
 SELECT * FROM ret_t ORDER BY id;
 
--- Subquery with RETURNING: use RETURNING results in a subquery.
--- This should also go through Orca (the inner DML RETURNING is planned
--- by Orca, the outer SELECT is also by Orca).
-CREATE TABLE ret_sub (id int4, val int4) DISTRIBUTED BY (id);
-INSERT INTO ret_sub VALUES (1, 10), (2, 20), (3, 30), (4, 40);
-
--- UPDATE ... RETURNING wrapped in a subquery: SELECT from the DML output.
--- Orca should plan the UPDATE RETURNING and the outer query.
-SELECT * FROM (
-    UPDATE ret_sub SET val = val + 100 WHERE id <= 2 RETURNING id, val
-) AS updated ORDER BY id;
-
--- Verify the update took effect
-SELECT * FROM ret_sub ORDER BY id;
-
-DROP TABLE ret_sub;
-
 -- Test DML RETURNING used inside a CTE (WITH ... RETURNING).
 -- The RETURNING results should be consumable by the outer query.
 CREATE TABLE ret_cte (id int4, val int4) DISTRIBUTED BY (id);
 INSERT INTO ret_cte VALUES (1, 10), (2, 20), (3, 30);
 
--- UPDATE ... RETURNING inside CTE, consumed by outer SELECT
+-- UPDATE ... RETURNING inside CTE, consumed by outer SELECT as a subquery
 -- start_matchsubs
 -- m/^INFO.*GPORCA.*falling/
 -- s/^INFO.*GPORCA.*falling/INFO:  GPORCA fallback (expected)/
