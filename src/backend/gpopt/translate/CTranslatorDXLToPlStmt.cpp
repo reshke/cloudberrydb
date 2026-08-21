@@ -5314,14 +5314,6 @@ CTranslatorDXLToPlStmt::TranslateDXLDml(
 	BOOL isSplit = phy_dml_dxlop->FSplit();
 	List *updateCols = NIL;
 
-	{
-		Query *oq = m_dxl_to_plstmt_context->m_orig_query;
-		fprintf(stderr, "RETURNING_DEBUG2: orig_query=%p returningList=%p cmdType=%d\n",
-				(void*)oq, oq ? (void*)oq->returningList : nullptr,
-				oq ? (int)oq->commandType : -1);
-		fflush(stderr);
-	}
-
 	switch (phy_dml_dxlop->GetDmlOpType())
 	{
 		case gpdxl::Edxldmldelete:

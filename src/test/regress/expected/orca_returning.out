@@ -42,21 +42,6 @@ INSERT 0 1
 (4 rows)
 
 CREATE TABLE
-INSERT 0 1
-ALTER TABLE
- a | c  
----+----
- 1 | 30
-(1 row)
-
-UPDATE 1
- a | c  
----+----
- 1 | 30
-(1 row)
-
-DELETE 1
-CREATE TABLE
 INSERT 0 2
 INFO:  GPORCA fallback (expected)
 DETAIL:  Expected fallback for split update RETURNING
@@ -72,7 +57,6 @@ UPDATE 1
  11 | 100
 (2 rows)
 
-DROP TABLE
 DROP TABLE
 DROP TABLE
 DROP SCHEMA

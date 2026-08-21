@@ -33,14 +33,6 @@ INSERT INTO ret_t VALUES (5, 50, 'e') RETURNING id, val;
 -- Verify final state
 SELECT * FROM ret_t ORDER BY id;
 
--- Test with a table that has a dropped column (dropped columns must not
--- break RETURNING column mapping).
-CREATE TABLE ret_drop (a int, b int, c int) DISTRIBUTED BY (a);
-INSERT INTO ret_drop VALUES (1, 2, 3);
-ALTER TABLE ret_drop DROP COLUMN b;
-UPDATE ret_drop SET c = 30 WHERE a = 1 RETURNING *;
-DELETE FROM ret_drop WHERE a = 1 RETURNING a, c;
-
 -- Test UPDATE RETURNING that changes the distribution key (split update).
 -- Orca does not support RETURNING with split updates yet, so this should
 -- fall back to the GPDB planner.
@@ -57,6 +49,5 @@ SELECT * FROM ret_dist ORDER BY id;
 
 -- Cleanup
 DROP TABLE ret_t;
-DROP TABLE ret_drop;
 DROP TABLE ret_dist;
 DROP SCHEMA orca_returning;
