@@ -15,16 +15,20 @@ set optimizer_trace_fallback = on;
 CREATE TABLE ret_t (id int4, val int4, name text) DISTRIBUTED BY (id);
 INSERT INTO ret_t VALUES (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (4, 40, 'd');
 
--- UPDATE RETURNING: simple column references
+-- UPDATE RETURNING: simple column references.
+-- Verify the plan goes through GPORCA with a Gather Motion for RETURNING.
+EXPLAIN UPDATE ret_t SET val = val + 1 WHERE id = 1 RETURNING id, val, name;
 UPDATE ret_t SET val = val + 1 WHERE id = 1 RETURNING id, val, name;
 
 -- UPDATE RETURNING: expression in RETURNING
+EXPLAIN UPDATE ret_t SET val = val * 2 WHERE id = 2 RETURNING id, val * 10 AS tenval;
 UPDATE ret_t SET val = val * 2 WHERE id = 2 RETURNING id, val * 10 AS tenval;
 
 -- UPDATE RETURNING: all columns
 UPDATE ret_t SET name = 'cc' WHERE id = 3 RETURNING *;
 
 -- DELETE RETURNING
+EXPLAIN DELETE FROM ret_t WHERE id = 4 RETURNING id, name;
 DELETE FROM ret_t WHERE id = 4 RETURNING id, name;
 
 -- INSERT RETURNING
@@ -32,6 +36,23 @@ INSERT INTO ret_t VALUES (5, 50, 'e') RETURNING id, val;
 
 -- Verify final state
 SELECT * FROM ret_t ORDER BY id;
+
+-- Subquery with RETURNING: use RETURNING results in a subquery.
+-- This should also go through Orca (the inner DML RETURNING is planned
+-- by Orca, the outer SELECT is also by Orca).
+CREATE TABLE ret_sub (id int4, val int4) DISTRIBUTED BY (id);
+INSERT INTO ret_sub VALUES (1, 10), (2, 20), (3, 30), (4, 40);
+
+-- UPDATE ... RETURNING wrapped in a subquery: SELECT from the DML output.
+-- Orca should plan the UPDATE RETURNING and the outer query.
+SELECT * FROM (
+    UPDATE ret_sub SET val = val + 100 WHERE id <= 2 RETURNING id, val
+) AS updated ORDER BY id;
+
+-- Verify the update took effect
+SELECT * FROM ret_sub ORDER BY id;
+
+DROP TABLE ret_sub;
 
 -- Test DML RETURNING used inside a CTE (WITH ... RETURNING).
 -- The RETURNING results should be consumable by the outer query.
