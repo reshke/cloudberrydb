@@ -109,11 +109,32 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 	Oid			rettype;
 	Type		typtup;
 	AclResult	aclresult;
+	bool		attempt_shell_creation;
+
+	/*
+	 * If this looks like it could be an input function, and the type doesn't
+	 * exist, we'll create it as a shell type.
+	 *
+	 * If the type name contains any modifiers like %TYPE, type[] array
+	 * syntax, or typmod decoration, it's not an input function, or at least
+	 * not one for which we'd want to automatically create a shell type.
+	 *
+	 * Only C-coded functions can be I/O functions.  We enforce this
+	 * restriction here mainly to prevent littering the catalogs with shell
+	 * types due to simple typos in user-defined function definitions.
+	 */
+	attempt_shell_creation =
+		!returnType->pct_type && returnType->arrayBounds == NULL &&
+		returnType->typmods == NIL &&
+		(languageOid == INTERNALlanguageId || languageOid == ClanguageId);
 
 	typtup = LookupTypeName(NULL, returnType, NULL, false);
-
 	if (typtup)
 	{
+		/*
+		 * Found an existing type with the given name.  Check if it's a shell
+		 * type.
+		 */
 		if (!((Form_pg_type) GETSTRUCT(typtup))->typisdefined)
 		{
 			if (languageOid == SQLlanguageId)
@@ -130,14 +151,23 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 		rettype = typeTypeId(typtup);
 		ReleaseSysCache(typtup);
 	}
+	else if (!attempt_shell_creation)
+	{
+		/* Type not found and we don't want to create a shell type */
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("type \"%s\" does not exist",
+						TypeNameToString(returnType))));
+	}
 	else
 	{
-		char	   *typnam = TypeNameToString(returnType);
+		/* Make a shell type */
 		Oid			namespaceId;
 		AclResult	aclresult;
 		char	   *typname;
 		ObjectAddress address;
 
+<<<<<<< HEAD
 		/*
 		 * Only C-coded functions can be I/O functions.  We enforce this
 		 * restriction here mainly to prevent littering the catalogs with
@@ -161,9 +191,14 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 		if (Gp_role == GP_ROLE_EXECUTE)
 		{
 			ereport(DEBUG1,
+=======
+		ereport(NOTICE,
+>>>>>>> ba2ea49b3cb (Don't create a shell type for function returning an array)
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("type \"%s\" is not yet defined", typnam),
+				 errmsg("type \"%s\" is not yet defined",
+						TypeNameToString(returnType)),
 				 errdetail("Creating a shell type definition.")));
+<<<<<<< HEAD
 		}
 		else
 		{
@@ -172,6 +207,9 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 					 errmsg("type \"%s\" is not yet defined", typnam),
 					 errdetail("Creating a shell type definition.")));
 		}
+=======
+
+>>>>>>> ba2ea49b3cb (Don't create a shell type for function returning an array)
 		namespaceId = QualifiedNameGetCreationNamespace(returnType->names,
 														&typname);
 		aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(),
@@ -179,6 +217,7 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error(aclresult, OBJECT_SCHEMA,
 						   get_namespace_name(namespaceId));
+
 		address = TypeShellMake(typname, namespaceId, GetUserId());
 		rettype = address.objectId;
 		Assert(OidIsValid(rettype));
