@@ -5207,11 +5207,11 @@ create_nestloop_plan(PlannerInfo *root,
 	NestLoop   *join_plan;
 	Plan	   *outer_plan;
 	Plan	   *inner_plan;
+	Relids		outerrelids;
 	List	   *tlist = build_path_tlist(root, &best_path->path);
 	List	   *joinrestrictclauses = best_path->joinrestrictinfo;
 	List	   *joinclauses;
 	List	   *otherclauses;
-	Relids		outerrelids;
 	List	   *nestParams;
 	Relids		saveOuterRels = root->curOuterRels;
 	bool		partition_selectors_created;
@@ -5235,15 +5235,19 @@ create_nestloop_plan(PlannerInfo *root,
 	outer_plan = create_plan_recurse(root, best_path->outerjoinpath, 0);
 
 	/*
+	/*
 	 * If the outer side contained Append nodes that can do partition pruning,
 	 * inject Partition Selectors to the inner side.
 	 */
 	partition_selectors_created =
 		pop_and_inject_partition_selectors(root, best_path);
 
-	/* For a nestloop, include outer relids in curOuterRels for inner side */
+	/* Include both child and top-parent relids while building the inner side. */
 	root->curOuterRels = bms_union(root->curOuterRels,
 								   best_path->outerjoinpath->parent->relids);
+	if (best_path->outerjoinpath->parent->top_parent_relids)
+		root->curOuterRels = bms_union(root->curOuterRels,
+									   best_path->outerjoinpath->parent->top_parent_relids);
 
 	inner_plan = create_plan_recurse(root, best_path->innerjoinpath, 0);
 
@@ -5344,7 +5348,6 @@ create_nestloop_plan(PlannerInfo *root,
 	 * Identify any nestloop parameters that should be supplied by this join
 	 * node, and remove them from root->curOuterParams.
 	 */
-	outerrelids = best_path->outerjoinpath->parent->relids;
 	nestParams = identify_current_nestloop_params(root, outerrelids);
 
 	join_plan = make_nestloop(tlist,
