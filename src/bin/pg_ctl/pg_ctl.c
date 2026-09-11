@@ -82,7 +82,7 @@ typedef enum
 
 static bool do_wait = true;
 static int	wait_seconds = DEFAULT_WAIT;
-static bool wait_seconds_arg = false;
+pg_attribute_unused() static bool wait_seconds_arg = false;
 static bool pass_terminal_fd = false;
 static bool silent_mode = false;
 static ShutdownMode shutdown_mode = FAST_MODE;
@@ -95,12 +95,12 @@ static char *post_opts = NULL;
 static const char *progname;
 static char *log_file = NULL;
 static char *exec_path = NULL;
-static char *event_source = NULL;
+pg_attribute_unused() static char *event_source = NULL;
 static char *wrapper = NULL;
 static char *wrapper_args = NULL;
-static char *register_servicename = "PostgreSQL";		/* FIXME: + version ID? */
-static char *register_username = NULL;
-static char *register_password = NULL;
+pg_attribute_unused() static char *register_servicename = "PostgreSQL";		/* FIXME: + version ID? */
+pg_attribute_unused() static char *register_username = NULL;
+pg_attribute_unused() static char *register_password = NULL;
 static char *argv0 = NULL;
 static bool allow_core_files = false;
 static time_t start_time;
