@@ -5791,6 +5791,8 @@ RollbackAndReleaseCurrentSubTransaction(void)
 	AssertState(s->blockState == TBLOCK_SUBINPROGRESS ||
 				s->blockState == TBLOCK_INPROGRESS ||
 				s->blockState == TBLOCK_IMPLICIT_INPROGRESS ||
+				s->blockState == TBLOCK_END ||
+				s->blockState == TBLOCK_PREPARE ||
 				s->blockState == TBLOCK_STARTED);
 
 	if (Gp_role == GP_ROLE_DISPATCH)
