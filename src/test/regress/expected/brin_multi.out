@@ -501,13 +501,14 @@ SET enable_seqscan = off;
 -- make sure the ranges were built correctly and 2023-01-01 eliminates all
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '2023-01-01'::date;
-                               QUERY PLAN                                
--------------------------------------------------------------------------
- Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
-   Recheck Cond: (a = '2023-01-01'::date)
-   ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
-         Index Cond: (a = '2023-01-01'::date)
-(4 rows)
+QUERY PLAN
+___________
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
+   ->  Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
+         Recheck Cond: (a = '2023-01-01'::date)
+         ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
+               Index Cond: (a = '2023-01-01'::date)
+GP_IGNORE:(6 rows)
 
 DROP TABLE brin_date_test;
 RESET enable_seqscan;
@@ -520,23 +521,25 @@ CREATE INDEX ON brin_timestamp_test USING brin (a timestamp_minmax_multi_ops) WI
 SET enable_seqscan = off;
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_timestamp_test WHERE a = '2023-01-01'::timestamp;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Bitmap Heap Scan on brin_timestamp_test (actual rows=0 loops=1)
-   Recheck Cond: (a = '2023-01-01 00:00:00'::timestamp without time zone)
-   ->  Bitmap Index Scan on brin_timestamp_test_a_idx (actual rows=0 loops=1)
-         Index Cond: (a = '2023-01-01 00:00:00'::timestamp without time zone)
-(4 rows)
+QUERY PLAN
+___________
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
+   ->  Bitmap Heap Scan on brin_timestamp_test (actual rows=0 loops=1)
+         Recheck Cond: (a = '2023-01-01 00:00:00'::timestamp without time zone)
+         ->  Bitmap Index Scan on brin_timestamp_test_a_idx (actual rows=0 loops=1)
+               Index Cond: (a = '2023-01-01 00:00:00'::timestamp without time zone)
+GP_IGNORE:(6 rows)
 
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_timestamp_test WHERE a = '1900-01-01'::timestamp;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
- Bitmap Heap Scan on brin_timestamp_test (actual rows=0 loops=1)
-   Recheck Cond: (a = '1900-01-01 00:00:00'::timestamp without time zone)
-   ->  Bitmap Index Scan on brin_timestamp_test_a_idx (actual rows=0 loops=1)
-         Index Cond: (a = '1900-01-01 00:00:00'::timestamp without time zone)
-(4 rows)
+QUERY PLAN
+___________
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
+   ->  Bitmap Heap Scan on brin_timestamp_test (actual rows=0 loops=1)
+         Recheck Cond: (a = '1900-01-01 00:00:00'::timestamp without time zone)
+         ->  Bitmap Index Scan on brin_timestamp_test_a_idx (actual rows=0 loops=1)
+               Index Cond: (a = '1900-01-01 00:00:00'::timestamp without time zone)
+GP_IGNORE:(6 rows)
 
 DROP TABLE brin_timestamp_test;
 RESET enable_seqscan;
@@ -548,23 +551,25 @@ CREATE INDEX ON brin_date_test USING brin (a date_minmax_multi_ops) WITH (pages_
 SET enable_seqscan = off;
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '2023-01-01'::date;
-                               QUERY PLAN                                
--------------------------------------------------------------------------
- Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
-   Recheck Cond: (a = '2023-01-01'::date)
-   ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
-         Index Cond: (a = '2023-01-01'::date)
-(4 rows)
+QUERY PLAN
+___________
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
+   ->  Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
+         Recheck Cond: (a = '2023-01-01'::date)
+         ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
+               Index Cond: (a = '2023-01-01'::date)
+GP_IGNORE:(6 rows)
 
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '1900-01-01'::date;
-                               QUERY PLAN                                
--------------------------------------------------------------------------
- Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
-   Recheck Cond: (a = '1900-01-01'::date)
-   ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
-         Index Cond: (a = '1900-01-01'::date)
-(4 rows)
+QUERY PLAN
+___________
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
+   ->  Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
+         Recheck Cond: (a = '1900-01-01'::date)
+         ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
+               Index Cond: (a = '1900-01-01'::date)
+GP_IGNORE:(6 rows)
 
 DROP TABLE brin_date_test;
 RESET enable_seqscan;
@@ -577,23 +582,25 @@ CREATE INDEX ON brin_interval_test USING brin (a interval_minmax_multi_ops) WITH
 SET enable_seqscan = off;
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_interval_test WHERE a = '-30 years'::interval;
-                                 QUERY PLAN                                  
------------------------------------------------------------------------------
- Bitmap Heap Scan on brin_interval_test (actual rows=0 loops=1)
-   Recheck Cond: (a = '@ 30 years ago'::interval)
-   ->  Bitmap Index Scan on brin_interval_test_a_idx (actual rows=0 loops=1)
-         Index Cond: (a = '@ 30 years ago'::interval)
-(4 rows)
+QUERY PLAN
+___________
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
+   ->  Bitmap Heap Scan on brin_interval_test (actual rows=0 loops=1)
+         Recheck Cond: (a = '@ 30 years ago'::interval)
+         ->  Bitmap Index Scan on brin_interval_test_a_idx (actual rows=0 loops=1)
+               Index Cond: (a = '@ 30 years ago'::interval)
+GP_IGNORE:(6 rows)
 
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_interval_test WHERE a = '30 years'::interval;
-                                 QUERY PLAN                                  
------------------------------------------------------------------------------
- Bitmap Heap Scan on brin_interval_test (actual rows=0 loops=1)
-   Recheck Cond: (a = '@ 30 years'::interval)
-   ->  Bitmap Index Scan on brin_interval_test_a_idx (actual rows=0 loops=1)
-         Index Cond: (a = '@ 30 years'::interval)
-(4 rows)
+QUERY PLAN
+___________
+ Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
+   ->  Bitmap Heap Scan on brin_interval_test (actual rows=0 loops=1)
+         Recheck Cond: (a = '@ 30 years'::interval)
+         ->  Bitmap Index Scan on brin_interval_test_a_idx (actual rows=0 loops=1)
+               Index Cond: (a = '@ 30 years'::interval)
+GP_IGNORE:(6 rows)
 
 DROP TABLE brin_interval_test;
 RESET enable_seqscan;
