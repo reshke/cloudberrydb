@@ -448,7 +448,16 @@ write_wal($node, $TLI, $end_lsn,
 	build_record_header(2 * 1024 * 1024 * 1024, 0, 0xdeadbeef));
 $log_size = -s $node->logfile;
 $node->start;
-ok($node->log_contains("invalid magic number 0000 ", $log_size),
+# The bytes of the split record header that spill over to the new page
+# overwrite xlp_magic.  In upstream the spill-over is the xl_info/xl_rmid
+# padding bytes, which are zero here, but Cloudberry writes an extra
+# distributed-commit WAL record after every statement, so the calibrated
+# insert LSN ends up 8 bytes further and the xl_prev bytes land on
+# xlp_magic instead.  Accept any magic number here; the point of the
+# test is that the page header is validated first.
+ok( $node->log_contains(
+		"invalid magic number [0-9A-F]{4} in log segment",
+		$log_size),
 	"xlp_magic zero (split record header)");
 
 # And we'll also check xlp_pageaddr before any header checks.
