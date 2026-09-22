@@ -3,12 +3,12 @@
 # Test integrity of intermediate states by PITR to those states
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
+use PostgresNode;
+use TestLib;
 use Test::More;
 
 # origin node: generate WAL records of interest.
-my $origin = PostgreSQL::Test::Cluster->new('origin');
+my $origin = PostgresNode->new('origin');
 $origin->init(has_archiving => 1, allows_streaming => 1);
 $origin->append_conf('postgresql.conf', 'autovacuum = off');
 $origin->start;
@@ -22,8 +22,14 @@ CREATE EXTENSION amcheck;
 CREATE TABLE not_leftmost (c text);
 ALTER TABLE not_leftmost ALTER c SET STORAGE PLAIN;
 INSERT INTO not_leftmost
-  SELECT repeat(n::text, database_block_size / 4)
-  FROM generate_series(1,6) t(n), pg_control_init();
+-- Each value occupies roughly a quarter of a btree leaf page.  This limits
+-- each index tuple to fit INDEX_SIZE_MASK (8160-ish) even where the index
+-- page can hold more (e.g. CBDB's 32KB pages), so leaf pages hold up to
+-- four index tuples.  Both this and upstream's quarter-of-8KB sizing end
+-- with the same leaf layout, where deleting the first four PK values
+-- leaves the leftmost leaf and one other leaf empty.
+SELECT repeat(n::text, current_setting('block_size')::int / 4 - 100)
+FROM generate_series(1,6) t(n);
 ALTER TABLE not_leftmost ADD CONSTRAINT not_leftmost_pk PRIMARY KEY (c);
 DELETE FROM not_leftmost WHERE c ~ '^[1-4]';
 SELECT pg_create_physical_replication_slot('for_waldump', true, false);
@@ -51,13 +57,14 @@ my $unlink_lsn = do {
 	run_log(['pg_waldump', '-p', $origin->data_dir . '/pg_wal',
 			 $before_vacuum_walfile, $after_unlink_walfile],
 			'>', \$stdout);
-	$stdout =~ m|^rmgr: Btree .*, lsn: ([/0-9A-F]+), .*, desc: UNLINK_PAGE left|m;
+	# CBDB/GPDB may emit this record as UNLINK_PAGE_META
+	$stdout =~ m|^rmgr: Btree .*, lsn: ([/0-9A-F]+), .*, desc: UNLINK_PAGE(?:_META)? left|m;
 	$1;
 };
 die "did not find UNLINK_PAGE record" unless $unlink_lsn;
 
 # replica node: amcheck at notable points in the WAL stream
-my $replica = PostgreSQL::Test::Cluster->new('replica');
+my $replica = PostgresNode->new('replica');
 $replica->init_from_backup($origin, 'my_backup', has_restoring => 1);
 $replica->append_conf('postgresql.conf',
 	"recovery_target_lsn = '$unlink_lsn'");
