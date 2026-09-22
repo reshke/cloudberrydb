@@ -1259,7 +1259,9 @@ where (select * from (select c as c1) s
            InitPlan 1 (returns $1)
              ->  Result
                    Output: ((t.c).f1 > 0)
-GP_IGNORE:(16 rows)
+ Settings: optimizer = 'off'
+ Optimizer: Postgres query optimizer
+(16 rows)
 
 with cte(c) as materialized (select row(1, 2)),
      cte2(c) as (select * from cte)
