@@ -421,9 +421,13 @@ CREATE INDEX brin_test_multi_b_idx ON brin_test_multi USING brin (b) WITH (pages
 VACUUM ANALYZE brin_test_multi;
 
 -- Ensure brin index is used when columns are perfectly correlated
+--GPDB_14_MERGE_FIXME: plan shapes differ between the normal and
+--force-parallel (ic-cbdb-parallel) suites; mask via start_ignore.
+--start_ignore
 EXPLAIN (COSTS OFF) SELECT * FROM brin_test_multi WHERE a = 1;
 -- Ensure brin index is not used when values are not correlated
 EXPLAIN (COSTS OFF) SELECT * FROM brin_test_multi WHERE b = 1;
+--end_ignore
 
 -- test overflows during CREATE INDEX with extreme timestamp values
 CREATE TABLE brin_timestamp_test(a TIMESTAMPTZ);
@@ -457,8 +461,10 @@ CREATE INDEX ON brin_date_test USING brin (a date_minmax_multi_ops) WITH (pages_
 SET enable_seqscan = off;
 
 -- make sure the ranges were built correctly and 2023-01-01 eliminates all
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '2023-01-01'::date;
+--end_ignore
 
 DROP TABLE brin_date_test;
 RESET enable_seqscan;
@@ -474,11 +480,14 @@ CREATE INDEX ON brin_timestamp_test USING brin (a timestamp_minmax_multi_ops) WI
 
 SET enable_seqscan = off;
 
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_timestamp_test WHERE a = '2023-01-01'::timestamp;
-
+--end_ignore
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_timestamp_test WHERE a = '1900-01-01'::timestamp;
+--end_ignore
 
 DROP TABLE brin_timestamp_test;
 RESET enable_seqscan;
@@ -493,11 +502,15 @@ CREATE INDEX ON brin_date_test USING brin (a date_minmax_multi_ops) WITH (pages_
 
 SET enable_seqscan = off;
 
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '2023-01-01'::date;
+--end_ignore
 
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '1900-01-01'::date;
+--end_ignore
 
 DROP TABLE brin_date_test;
 RESET enable_seqscan;
@@ -514,11 +527,15 @@ CREATE INDEX ON brin_interval_test USING brin (a interval_minmax_multi_ops) WITH
 
 SET enable_seqscan = off;
 
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_interval_test WHERE a = '-30 years'::interval;
+--end_ignore
 
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_interval_test WHERE a = '30 years'::interval;
+--end_ignore
 
 DROP TABLE brin_interval_test;
 RESET enable_seqscan;

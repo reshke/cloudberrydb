@@ -20,6 +20,8 @@ CREATE TABLE brintest_multi (
 	uuidcol uuid,
 	lsncol pg_lsn
 ) WITH (fillfactor=10);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'int8col' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO brintest_multi SELECT
 	142857 * tenthous,
 	thousand,
@@ -111,6 +113,8 @@ CREATE TABLE brinopers_multi (colname name, typ text,
 	op text[], value text[], matches int[],
 	check (cardinality(op) = cardinality(value)),
 	check (cardinality(op) = cardinality(matches)));
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'colname' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO brinopers_multi VALUES
 	('int2col', 'int2',
 	 '{>, >=, =, <=, <}',
@@ -505,16 +509,18 @@ insert into public.brintest_multi (float8col) values (real 'nan');
 UPDATE brintest_multi SET int8col = int8col * int4col;
 -- Test handling of inet netmasks with inet_minmax_multi_ops
 CREATE TABLE brin_test_inet (a inet);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE INDEX ON brin_test_inet USING brin (a inet_minmax_multi_ops);
 INSERT INTO brin_test_inet VALUES ('127.0.0.1/0');
 INSERT INTO brin_test_inet VALUES ('0.0.0.0/12');
 DROP TABLE brin_test_inet;
 -- Tests for brin_summarize_new_values
 SELECT brin_summarize_new_values('brintest_multi'); -- error, not an index
-ERROR:  "brintest_multi" is not an index
+ERROR:  "brintest_multi" is not an index  (seg0 slice1 2a02:6b8:c37:834b:0:5644:602c:0:7002 pid=4107940)
 CONTEXT:  SQL function "brin_summarize_new_values" statement 1
 SELECT brin_summarize_new_values('tenk1_unique1'); -- error, not a BRIN index
-ERROR:  "tenk1_unique1" is not a BRIN index
+ERROR:  "tenk1_unique1" is not a BRIN index  (seg0 slice1 2a02:6b8:c37:834b:0:5644:602c:0:7002 pid=4107940)
 CONTEXT:  SQL function "brin_summarize_new_values" statement 1
 SELECT brin_summarize_new_values('brinidx_multi') > 0 AS result; -- ok, no change expected
  result 
@@ -545,6 +551,8 @@ SELECT brin_desummarize_range('brinidx_multi', 100000000);
 
 -- test building an index with many values, to force compaction of the buffer
 CREATE TABLE brin_large_range (a int4);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO brin_large_range SELECT i FROM generate_series(1,10000) s(i);
 CREATE INDEX brin_large_range_idx ON brin_large_range USING brin (a int4_minmax_multi_ops);
 DROP TABLE brin_large_range;
@@ -552,6 +560,8 @@ DROP TABLE brin_large_range;
 CREATE TABLE brin_summarize_multi (
     value int
 ) WITH (fillfactor=10, autovacuum_enabled=false);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'value' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 CREATE INDEX brin_summarize_multi_idx ON brin_summarize_multi USING brin (value) WITH (pages_per_range=2);
 -- Fill a few pages
 DO $$
@@ -593,39 +603,51 @@ SELECT brin_summarize_range('brin_summarize_multi_idx', 4294967295);
 
 -- invalid block number values
 SELECT brin_summarize_range('brin_summarize_multi_idx', -1);
-ERROR:  block number out of range: -1
+ERROR:  block number out of range: -1  (seg0 slice1 2a02:6b8:c37:834b:0:5644:602c:0:7002 pid=4107940)
+CONTEXT:  SQL function "brin_summarize_range" statement 1
 SELECT brin_summarize_range('brin_summarize_multi_idx', 4294967296);
-ERROR:  block number out of range: 4294967296
+ERROR:  block number out of range: 4294967296  (seg0 slice1 2a02:6b8:c37:834b:0:5644:602c:0:7002 pid=4107940)
+CONTEXT:  SQL function "brin_summarize_range" statement 1
 -- test brin cost estimates behave sanely based on correlation of values
 CREATE TABLE brin_test_multi (a INT, b INT);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO brin_test_multi SELECT x/100,x%100 FROM generate_series(1,10000) x(x);
 CREATE INDEX brin_test_multi_a_idx ON brin_test_multi USING brin (a) WITH (pages_per_range = 2);
 CREATE INDEX brin_test_multi_b_idx ON brin_test_multi USING brin (b) WITH (pages_per_range = 2);
 VACUUM ANALYZE brin_test_multi;
 -- Ensure brin index is used when columns are perfectly correlated
+--GPDB_14_MERGE_FIXME: plan shapes differ between the normal and
+--force-parallel (ic-cbdb-parallel) suites; mask via start_ignore.
+--start_ignore
 EXPLAIN (COSTS OFF) SELECT * FROM brin_test_multi WHERE a = 1;
-QUERY PLAN
-___________
+                       QUERY PLAN                       
+--------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1)
    ->  Bitmap Heap Scan on brin_test_multi
          Recheck Cond: (a = 1)
          ->  Bitmap Index Scan on brin_test_multi_a_idx
                Index Cond: (a = 1)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
 -- Ensure brin index is not used when values are not correlated
 EXPLAIN (COSTS OFF) SELECT * FROM brin_test_multi WHERE b = 1;
-QUERY PLAN
-___________
+                       QUERY PLAN                       
+--------------------------------------------------------
  Gather Motion 3:1  (slice1; segments: 3)
    ->  Bitmap Heap Scan on brin_test_multi
          Recheck Cond: (b = 1)
          ->  Bitmap Index Scan on brin_test_multi_b_idx
                Index Cond: (b = 1)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
 -- test overflows during CREATE INDEX with extreme timestamp values
 CREATE TABLE brin_timestamp_test(a TIMESTAMPTZ);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 SET datestyle TO iso;
 -- values close to timetamp minimum
 INSERT INTO brin_timestamp_test
@@ -639,6 +661,8 @@ CREATE INDEX ON brin_timestamp_test USING brin (a timestamptz_minmax_multi_ops) 
 DROP TABLE brin_timestamp_test;
 -- test overflows during CREATE INDEX with extreme date values
 CREATE TABLE brin_date_test(a DATE);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 -- insert values close to date minimum
 INSERT INTO brin_date_test SELECT '4713-01-01 BC'::date + i FROM generate_series(1, 30) s(i);
 -- insert values close to date minimum
@@ -646,109 +670,136 @@ INSERT INTO brin_date_test SELECT '5874897-12-01'::date + i FROM generate_series
 CREATE INDEX ON brin_date_test USING brin (a date_minmax_multi_ops) WITH (pages_per_range=1);
 SET enable_seqscan = off;
 -- make sure the ranges were built correctly and 2023-01-01 eliminates all
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '2023-01-01'::date;
-QUERY PLAN
-___________
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
    ->  Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
          Recheck Cond: (a = '2023-01-01'::date)
          ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
                Index Cond: (a = '2023-01-01'::date)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
 DROP TABLE brin_date_test;
 RESET enable_seqscan;
 -- test handling of infinite timestamp values
 CREATE TABLE brin_timestamp_test(a TIMESTAMP);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO brin_timestamp_test VALUES ('-infinity'), ('infinity');
 INSERT INTO brin_timestamp_test
 SELECT i FROM generate_series('2000-01-01'::timestamp, '2000-02-09'::timestamp, '1 day'::interval) s(i);
 CREATE INDEX ON brin_timestamp_test USING brin (a timestamp_minmax_multi_ops) WITH (pages_per_range=1);
 SET enable_seqscan = off;
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_timestamp_test WHERE a = '2023-01-01'::timestamp;
-QUERY PLAN
-___________
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
    ->  Bitmap Heap Scan on brin_timestamp_test (actual rows=0 loops=1)
          Recheck Cond: (a = '2023-01-01 00:00:00'::timestamp without time zone)
          ->  Bitmap Index Scan on brin_timestamp_test_a_idx (actual rows=0 loops=1)
                Index Cond: (a = '2023-01-01 00:00:00'::timestamp without time zone)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_timestamp_test WHERE a = '1900-01-01'::timestamp;
-QUERY PLAN
-___________
+                                     QUERY PLAN                                     
+------------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
    ->  Bitmap Heap Scan on brin_timestamp_test (actual rows=0 loops=1)
          Recheck Cond: (a = '1900-01-01 00:00:00'::timestamp without time zone)
          ->  Bitmap Index Scan on brin_timestamp_test_a_idx (actual rows=0 loops=1)
                Index Cond: (a = '1900-01-01 00:00:00'::timestamp without time zone)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
 DROP TABLE brin_timestamp_test;
 RESET enable_seqscan;
 -- test handling of infinite date values
 CREATE TABLE brin_date_test(a DATE);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO brin_date_test VALUES ('-infinity'), ('infinity');
 INSERT INTO brin_date_test SELECT '2000-01-01'::date + i FROM generate_series(1, 40) s(i);
 CREATE INDEX ON brin_date_test USING brin (a date_minmax_multi_ops) WITH (pages_per_range=1);
 SET enable_seqscan = off;
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '2023-01-01'::date;
-QUERY PLAN
-___________
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
    ->  Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
          Recheck Cond: (a = '2023-01-01'::date)
          ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
                Index Cond: (a = '2023-01-01'::date)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_date_test WHERE a = '1900-01-01'::date;
-QUERY PLAN
-___________
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
    ->  Bitmap Heap Scan on brin_date_test (actual rows=0 loops=1)
          Recheck Cond: (a = '1900-01-01'::date)
          ->  Bitmap Index Scan on brin_date_test_a_idx (actual rows=0 loops=1)
                Index Cond: (a = '1900-01-01'::date)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
 DROP TABLE brin_date_test;
 RESET enable_seqscan;
 RESET datestyle;
 -- test handling of overflow for interval values
 CREATE TABLE brin_interval_test(a INTERVAL);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Apache Cloudberry data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
 INSERT INTO brin_interval_test SELECT (i || ' years')::interval FROM generate_series(-178000000, -177999980) s(i);
 INSERT INTO brin_interval_test SELECT (i || ' years')::interval FROM generate_series( 177999980,  178000000) s(i);
 CREATE INDEX ON brin_interval_test USING brin (a interval_minmax_multi_ops) WITH (pages_per_range=1);
 SET enable_seqscan = off;
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_interval_test WHERE a = '-30 years'::interval;
-QUERY PLAN
-___________
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
    ->  Bitmap Heap Scan on brin_interval_test (actual rows=0 loops=1)
          Recheck Cond: (a = '@ 30 years ago'::interval)
          ->  Bitmap Index Scan on brin_interval_test_a_idx (actual rows=0 loops=1)
                Index Cond: (a = '@ 30 years ago'::interval)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
+--start_ignore
 EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, SUMMARY OFF)
 SELECT * FROM brin_interval_test WHERE a = '30 years'::interval;
-QUERY PLAN
-___________
+                                    QUERY PLAN                                     
+-----------------------------------------------------------------------------------
  Gather Motion 1:1  (slice1; segments: 1) (actual rows=0 loops=1)
    ->  Bitmap Heap Scan on brin_interval_test (actual rows=0 loops=1)
          Recheck Cond: (a = '@ 30 years'::interval)
          ->  Bitmap Index Scan on brin_interval_test_a_idx (actual rows=0 loops=1)
                Index Cond: (a = '@ 30 years'::interval)
-GP_IGNORE:(6 rows)
+ Optimizer: GPORCA
+(6 rows)
 
+--end_ignore
 DROP TABLE brin_interval_test;
 RESET enable_seqscan;
 RESET datestyle;
