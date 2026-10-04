@@ -132,6 +132,17 @@ select 0 as pct, count(unique1) from tenk1 tablesample system (0)
 union all
 select 100 as pct, count(unique1) from tenk1 tablesample system (100);
 
+-- check that a join alias Var in a pulled-up LATERAL subquery's TABLESAMPLE
+-- clause gets flattened
+select pct, count(unique1) from
+  ((values (0)) v(pct) full join (values (100)) w(pct) using (pct)),
+  lateral (select * from tenk1 tablesample bernoulli (pct)) ss
+  group by pct order by pct;
+select pct, count(unique1) from
+  ((values (0)) v(pct) full join (values (100)) w(pct) using (pct)),
+  lateral (select * from tenk1 tablesample bernoulli (pct)) ss
+  group by pct order by pct;
+
 -- errors
 SELECT id FROM test_tablesample TABLESAMPLE FOOBAR (1);
 

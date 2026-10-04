@@ -438,6 +438,15 @@ select 100 as pct, count(unique1) from tenk1 tablesample system (100);
  100 | 10000
 (2 rows)
 
+select pct, count(unique1) from
+  ((values (0)) v(pct) full join (values (100)) w(pct) using (pct)),
+  lateral (select * from tenk1 tablesample bernoulli (pct)) ss
+  group by pct order by pct;
+ pct | count 
+-----+-------
+ 100 | 10000
+(1 row)
+
 -- errors
 SELECT id FROM test_tablesample TABLESAMPLE FOOBAR (1);
 ERROR:  tablesample method foobar does not exist

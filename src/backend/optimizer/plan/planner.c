@@ -116,10 +116,11 @@ create_upper_paths_hook_type create_upper_paths_hook = NULL;
 #define EXPRKIND_APPINFO			7
 #define EXPRKIND_PHV				8
 #define EXPRKIND_TABLESAMPLE		9
-#define EXPRKIND_ARBITER_ELEM		10
-#define EXPRKIND_TABLEFUNC			11
-#define EXPRKIND_TABLEFUNC_LATERAL	12
-#define EXPRKIND_WINDOW_BOUND		13
+#define EXPRKIND_TABLESAMPLE_LATERAL	10
+#define EXPRKIND_ARBITER_ELEM		11
+#define EXPRKIND_TABLEFUNC			12
+#define EXPRKIND_TABLEFUNC_LATERAL	13
+#define EXPRKIND_WINDOW_BOUND		14
 
 /* standard_qp_extra is defined in optimizer/planner.h */
 
@@ -1266,10 +1267,15 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 		if (rte->rtekind == RTE_RELATION)
 		{
 			if (rte->tablesample)
+			{
+				/* Preprocess the tablesample expression(s) fully */
+				kind = rte->lateral ? EXPRKIND_TABLESAMPLE_LATERAL :
+					EXPRKIND_TABLESAMPLE;
 				rte->tablesample = (TableSampleClause *)
 					preprocess_expression(root,
 										  (Node *) rte->tablesample,
-										  EXPRKIND_TABLESAMPLE);
+										  kind);
+			}
 		}
 		else if (rte->rtekind == RTE_SUBQUERY)
 		{
