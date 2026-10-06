@@ -108,6 +108,7 @@ explain (costs off)
 select * from btree_bpchar where f1::bpchar like 'foo%';
 select * from btree_bpchar where f1::bpchar like 'foo%';
 
+<<<<<<< HEAD
 explain (costs off)
 select * from btree_bpchar where f1::bpchar ='foo';
 select * from btree_bpchar where f1::bpchar ='foo';
@@ -115,6 +116,8 @@ select * from btree_bpchar where f1::bpchar ='foo';
 -- get test coverage for "single value" deduplication strategy:
 insert into btree_bpchar select 'foo' from generate_series(1,1500);
 
+=======
+>>>>>>> 4697138049a (Rescind unsafe deduplication support.)
 --
 -- Perform unique checking, with and without the use of deduplication
 --
