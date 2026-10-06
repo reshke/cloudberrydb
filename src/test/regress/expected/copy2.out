@@ -129,6 +129,15 @@ COPY x from stdin WHERE a > 60003;
 ERROR:  function cannot execute on a QE slice because it issues a non-SELECT statement
 CONTEXT:  SQL statement "UPDATE x set e='after trigger fired' where c='stuff'"
 PL/pgSQL function fn_x_after() line 3 at SQL statement
+CREATE TEMP TABLE copy_where_filter (a int) DISTRIBUTED RANDOMLY;
+COPY copy_where_filter from stdin WHERE NOT (a < 70003);
+COPY 1
+SELECT * FROM copy_where_filter;
+  a
+-----
+70003
+(1 row)
+DROP TABLE copy_where_filter;
 COPY x from stdin WHERE f > 60003;
 ERROR:  column "f" does not exist
 LINE 1: COPY x from stdin WHERE f > 60003;

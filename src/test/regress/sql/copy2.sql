@@ -138,6 +138,15 @@ COPY x from stdin WHERE a > 60003;
 60005	26	36	46	56
 \.
 
+CREATE TEMP TABLE copy_where_filter (a int) DISTRIBUTED RANDOMLY;
+COPY copy_where_filter from stdin WHERE NOT (a < 70003);
+70001
+70002
+70003
+\.
+SELECT * FROM copy_where_filter;
+DROP TABLE copy_where_filter;
+
 COPY x from stdin WHERE f > 60003;
 \.
 
