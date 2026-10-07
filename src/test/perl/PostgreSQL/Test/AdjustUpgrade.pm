@@ -97,6 +97,32 @@ sub adjust_database_contents
 			'drop extension if exists test_ext7');
 	}
 
+	# We can no longer upgrade bpchar indexes that claim deduplication ability
+	# (amcheck will complain about them), so drop them if source is pre-v14.
+	if ($old_version < 14 && $dbnames{"regression"})
+	{
+		_add_st($result, 'regression',
+			'drop index if exists public.hslot_hubname',
+			'drop index if exists public.hslot_name',
+			'drop index if exists public.hub_name',
+			'drop index if exists public.iface_name',
+			'drop index if exists public.phone_name',
+			'drop index if exists public.pline_name',
+			'drop index if exists public.pslot_name',
+			'drop index if exists public.room_rno',
+			'drop index if exists public.wslot_name');
+	}
+
+	# stuff not supported from release 14
+	if ($old_version < 14)
+	{
+		_add_st($result, 'regression',
+			'drop operator #@# (bigint,NONE)',
+			'drop operator #%# (bigint,NONE)',
+			'drop operator if exists !=- (bigint,NONE)',
+			'drop operator if exists #@%# (bigint,NONE)');
+	}
+
 	# get rid of dblink's dependencies on regress.so
 	my $regrdb =
 	  $old_version le '9.4'
