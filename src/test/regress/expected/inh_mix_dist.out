@@ -1,0 +1,91 @@
+-- inh_mix_dist: inheritance trees must not mix distributed and
+-- replicated/entry-only tables, even with explicit DISTRIBUTED RANDOMLY
+-- on the child. Previously the explicit-random path in
+-- transformDistributedBy() skipped parent distribution checks, letting
+-- a randomly-distributed child attach to a replicated parent and
+-- poisoning the whole inheritance tree.
+CREATE SCHEMA inh_mix_dist_schema;
+SET search_path = inh_mix_dist_schema;
+CREATE TABLE hash_parent (a int, b text) DISTRIBUTED BY (a);
+-- A replicated parent cannot get any distributed child, hash or random
+CREATE TABLE repl_parent (a int, b text) DISTRIBUTED REPLICATED;
+INSERT INTO repl_parent VALUES (1, 'p1'), (2, 'p2');
+-- hash child: was already rejected
+CREATE TABLE repl_child_hash (a int, b text) INHERITS (repl_parent) DISTRIBUTED BY (a);
+ERROR:  cannot inherit from replicated table "repl_parent" to create table "repl_child_hash"
+DETAIL:  An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.
+-- random child: must be rejected the same way
+CREATE TABLE repl_child_random (a int, b text) INHERITS (repl_parent) DISTRIBUTED RANDOMLY;
+ERROR:  cannot inherit from replicated table "repl_parent" to create table "repl_child_random"
+DETAIL:  An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.
+-- replicated child: was already rejected
+CREATE TABLE repl_child_replicated (a int, b text) INHERITS (repl_parent) DISTRIBUTED REPLICATED;
+ERROR:  INHERITS clause cannot be used with DISTRIBUTED REPLICATED clause
+-- no explicit distribution: was already rejected
+CREATE TABLE repl_child_nodefault (a int, b text) INHERITS (repl_parent);
+ERROR:  cannot inherit from replicated table "repl_parent" to create table "repl_child_nodefault"
+DETAIL:  An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.
+-- replicated parent must be unaffected (note: tableoid on replicated tables
+-- is a separate, known limitation and not used here)
+SELECT a, b FROM repl_parent ORDER BY a;
+ a | b  
+---+----
+ 1 | p1
+ 2 | p2
+(2 rows)
+
+UPDATE repl_parent SET b = b || '_u' WHERE a = 1;
+SELECT a, b FROM repl_parent ORDER BY a;
+ a |  b   
+---+------
+ 1 | p1_u
+ 2 | p2
+(2 rows)
+
+DELETE FROM repl_parent WHERE a = 2;
+SELECT a, b FROM repl_parent ORDER BY a;
+ a |  b   
+---+------
+ 1 | p1_u
+(1 row)
+
+-- legal hash inheritance tree keeps working
+CREATE TABLE hash_child (a int, b text) INHERITS (hash_parent) DISTRIBUTED BY (a);
+NOTICE:  merging column "a" with inherited definition
+NOTICE:  merging column "b" with inherited definition
+INSERT INTO hash_parent VALUES (10, 'hp');
+INSERT INTO hash_child VALUES (11, 'hc');
+SELECT tableoid::regclass AS rel, a, b FROM hash_parent ORDER BY a;
+     rel     | a  | b  
+-------------+----+----
+ hash_parent | 10 | hp
+ hash_child  | 11 | hc
+(2 rows)
+
+UPDATE hash_parent SET b = b || '_u' WHERE a = 10;
+SELECT a, b FROM hash_parent ORDER BY a;
+ a  |  b   
+----+------
+ 10 | hp_u
+ 11 | hc
+(2 rows)
+
+DELETE FROM hash_parent WHERE a = 11;
+SELECT count(*) FROM hash_parent;
+ count 
+-------
+     1
+(1 row)
+
+-- ALTER TABLE ... INHERIT guard is unchanged
+CREATE TABLE orphan_hash (a int, b text) DISTRIBUTED BY (a);
+ALTER TABLE orphan_hash INHERIT repl_parent;
+ERROR:  Replicated table cannot be inherited
+-- cleanup
+RESET search_path;
+DROP SCHEMA inh_mix_dist_schema CASCADE;
+NOTICE:  drop cascades to 4 other objects
+DETAIL:  drop cascades to table inh_mix_dist_schema.hash_parent
+drop cascades to table inh_mix_dist_schema.repl_parent
+drop cascades to table inh_mix_dist_schema.hash_child
+drop cascades to table inh_mix_dist_schema.orphan_hash

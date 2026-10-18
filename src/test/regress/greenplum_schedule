@@ -393,4 +393,7 @@ test: dboptions
 # test dispatch and result handling of gp_log_memory_backend_contexts
 test: gp_log_mem_dispatch
 
+# inheritance / distribution mixture checks
+test: inh_mix_dist
+
 # end of tests

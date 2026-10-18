@@ -2385,6 +2385,55 @@ transformCreateExternalStmt(CreateExternalStmt *stmt, const char *queryString)
 }
 
 /*
+ * Check that an inheritance parent's distribution policy is compatible
+ * with creating a distributed child table. The parent must not be a
+ * foreign table, a catalog (entry-only) table, or a replicated table.
+ */
+static void
+check_parent_distribution(RangeVar *parent, Relation parentrel,
+						  const char *childname)
+{
+	GpPolicy   *parentPolicy = parentrel->rd_cdbpolicy;
+
+	if (parentrel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot inherit from foreign table \"%s\" to create table \"%s\"",
+						parent->relname, childname),
+				 errdetail("An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.")));
+	}
+
+	/*
+	 * Partitioned child must have partitioned parents. During binary
+	 * upgrade we allow to skip this check since that runs against a
+	 * segment in utility mode and the distribution policy isn't stored
+	 * in the segments.
+	 */
+	if ((parentPolicy == NULL ||
+			parentPolicy->ptype == POLICYTYPE_ENTRY) &&
+			!IsBinaryUpgrade)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot inherit from catalog table \"%s\" to create table \"%s\"",
+						parent->relname, childname),
+				 errdetail("An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.")));
+	}
+
+	if ((parentPolicy == NULL ||
+			GpPolicyIsReplicated(parentPolicy)) &&
+			!IsBinaryUpgrade)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot inherit from replicated table \"%s\" to create table \"%s\"",
+						parent->relname, childname),
+				 errdetail("An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.")));
+	}
+}
+
+/*
  * Process a DISTRIBUTED BY clause.
  *
  * If no DISTRIBUTED BY was given, this deduces a suitable default based on
@@ -2420,10 +2469,28 @@ transformDistributedBy(ParseState *pstate,
 		/* Otherwise use DEFAULT as numsegments */
 		numsegments = GP_POLICY_DEFAULT_NUMSEGMENTS();
 
-	/* Explicitly specified distributed randomly, no further check needed */
+	/*
+	 * If the table INHERITS from other tables, the parents' distribution
+	 * policies must still be checked: a distributed child cannot be
+	 * created under a foreign, entry-only or replicated parent, even
+	 * when an explicit DISTRIBUTED RANDOMLY clause is given.
+	 */
 	if (distributedBy &&
 		(distributedBy->ptype == POLICYTYPE_PARTITIONED && distributedBy->keyCols == NIL))
 	{
+		ListCell   *entry;
+
+		foreach(entry, cxt->inhRelations)
+		{
+			RangeVar   *parent = (RangeVar *) lfirst(entry);
+			Relation	parentrel;
+
+			parentrel = heap_openrv(parent, AccessShareLock);
+			check_parent_distribution(parent, parentrel,
+									  cxt->relation->relname);
+			heap_close(parentrel, AccessShareLock);
+		}
+
 		distributedBy->numsegments = numsegments;
 		return distributedBy;
 	}
@@ -2561,42 +2628,8 @@ transformDistributedBy(ParseState *pstate,
 			parentrel = heap_openrv(parent, AccessShareLock);
 			parentPolicy = parentrel->rd_cdbpolicy;
 
-			if (parentrel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot inherit from foreign table \"%s\" to create table \"%s\"",
-								parent->relname, cxt->relation->relname),
-						 errdetail("An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.")));
-			}
-
-			/*
-			 * Partitioned child must have partitioned parents. During binary
-			 * upgrade we allow to skip this check since that runs against a
-			 * segment in utility mode and the distribution policy isn't stored
-			 * in the segments.
-			 */
-			if ((parentPolicy == NULL ||
-					parentPolicy->ptype == POLICYTYPE_ENTRY) &&
-					!IsBinaryUpgrade)
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot inherit from catalog table \"%s\" to create table \"%s\"",
-								parent->relname, cxt->relation->relname),
-						 errdetail("An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.")));
-			}
-
-			if ((parentPolicy == NULL ||
-					GpPolicyIsReplicated(parentPolicy)) &&
-					!IsBinaryUpgrade)
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("cannot inherit from replicated table \"%s\" to create table \"%s\"",
-								parent->relname, cxt->relation->relname),
-						 errdetail("An inheritance hierarchy cannot contain a mixture of distributed and non-distributed tables.")));
-			}
+			check_parent_distribution(parent, parentrel,
+									  cxt->relation->relname);
 
 			/*
 			 * If we still don't know what distribution to use, and this
