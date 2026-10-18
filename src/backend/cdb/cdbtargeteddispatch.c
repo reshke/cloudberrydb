@@ -203,7 +203,22 @@ GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeT
 					Node *val = seg_ids[i];
 					if (IsA(val, Const))
 					{
-						int32 segid = DatumGetInt32(((Const *) val)->constvalue);
+						Const  *segidConst = (Const *) val;
+
+						/*
+						 * A NULL or out-of-range gp_segment_id constant can
+						 * never be matched by any segment.  Such an impossible
+						 * value must not be added to the direct dispatch
+						 * content id list, otherwise AllocateGang() will FATAL
+						 * the QD backend with "unexpected content id" while
+						 * setting up the gang.  Skip it instead; the segment
+						 * we dispatch to will simply filter out all rows.
+						 */
+						if (segidConst->constisnull)
+							continue;
+						int32 segid = DatumGetInt32(segidConst->constvalue);
+						if (segid < 0 || segid >= getgpsegmentCount())
+							continue;
 						contentIds = list_append_unique_int(contentIds, segid);
 					}
 					else
@@ -218,6 +233,20 @@ GetContentIdsFromPlanForSingleRelation(PlannerInfo *root, Plan *plan, int rangeT
 		DeletePossibleValueSetData(&pvs_segids);
 		if (result.isDirectDispatch)
 		{
+			/*
+			 * All candidate values may have been impossible (NULL or
+			 * out-of-range) ids, e.g. "gp_segment_id = 99" on a cluster with
+			 * fewer segments, in which case contentIds is empty.  A qual that
+			 * no segment can satisfy yields no rows, so dispatching to a
+			 * single arbitrary segment (0) gives the correct empty result.
+			 * An empty contentIds list is NOT safe here: the writer-slice
+			 * path (FillSliceGangInfo/AllocateGang) cannot set up a gang with
+			 * zero content ids, hence dispatch to segment 0 rather than NIL.
+			 * This matches the behavior of ORCA, which produces an empty
+			 * result (or a no-op DML) for such quals.
+			 */
+			if (contentIds == NIL)
+				contentIds = list_make1_int(0);
 			result.contentIds = contentIds;
 			result.haveProcessedAnyCalculations = true;
 			if (rte->rtekind == RTE_RELATION)

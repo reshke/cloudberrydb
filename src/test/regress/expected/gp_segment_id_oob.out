@@ -1,0 +1,109 @@
+--
+-- gp_segment_id pointed at with an out-of-range constant (e.g. 99 or -5)
+-- in a qual.  Such a qual can never be satisfied by any segment: the QD
+-- must not crash with
+--   FATAL:  unexpected content id 99, should be [-1, N]
+-- (used to happen in AllocateGang via the direct dispatch content id
+-- calculation, GetContentIdsFromPlanForSingleRelation).  Instead, the
+-- query returns no rows and DML is a no-op, matching the behavior of
+-- ORCA for a plain SELECT.
+--
+CREATE TABLE gp_segment_id_oob_rep(a int) DISTRIBUTED REPLICATED;
+CREATE TABLE gp_segment_id_oob_base(b int) DISTRIBUTED RANDOMLY;
+CREATE TABLE gp_segment_id_oob_hash(c int) DISTRIBUTED BY (c);
+INSERT INTO gp_segment_id_oob_rep VALUES (1), (2);
+INSERT INTO gp_segment_id_oob_base VALUES (10), (20);
+INSERT INTO gp_segment_id_oob_hash VALUES (1), (2);
+-- LEGACY planner; subquery qual with an out-of-range constant used to
+-- FATAL the QD backend at EXECUTE time.
+SET optimizer = off;
+SELECT a FROM gp_segment_id_oob_rep
+  WHERE EXISTS (SELECT 1 FROM gp_segment_id_oob_base WHERE gp_segment_id = 99)
+  ORDER BY a;
+ a 
+---
+(0 rows)
+
+-- Directly in the qual, high out-of-range and negative values.
+SELECT c FROM gp_segment_id_oob_hash WHERE gp_segment_id = 99 ORDER BY c;
+ c 
+---
+(0 rows)
+
+SELECT c FROM gp_segment_id_oob_hash WHERE gp_segment_id = -5 ORDER BY c;
+ c 
+---
+(0 rows)
+
+-- OR form: two impossible values must yield no rows.
+SELECT count(*) FROM gp_segment_id_oob_hash
+  WHERE gp_segment_id = 99 OR gp_segment_id = -5;
+ count 
+-------
+     0
+(1 row)
+
+-- A valid id still produces rows.
+SELECT count(*) FROM gp_segment_id_oob_base WHERE gp_segment_id >= 0;
+ count 
+-------
+     2
+(1 row)
+
+-- Replicated DML target with an out-of-range constant in a subquery qual.
+UPDATE gp_segment_id_oob_rep SET a = a
+  WHERE EXISTS (SELECT 1 FROM gp_segment_id_oob_base WHERE gp_segment_id = 99);
+DELETE FROM gp_segment_id_oob_rep
+  WHERE EXISTS (SELECT 1 FROM gp_segment_id_oob_base WHERE gp_segment_id = 99);
+-- Hash-distributed DML target.
+DELETE FROM gp_segment_id_oob_hash WHERE gp_segment_id = 99;
+UPDATE gp_segment_id_oob_hash SET c = c WHERE gp_segment_id = 99;
+-- Nothing changed, anywhere.
+SELECT count(*) FROM gp_segment_id_oob_rep;
+ count 
+-------
+     2
+(1 row)
+
+SELECT count(*) FROM gp_segment_id_oob_hash;
+ count 
+-------
+     2
+(1 row)
+
+SELECT count(*) FROM gp_segment_id_oob_base;
+ count 
+-------
+     2
+(1 row)
+
+RESET optimizer;
+-- ORCA planner: same queries must return no rows / no-op DML as well.
+SET optimizer = on;
+SELECT a FROM gp_segment_id_oob_rep
+  WHERE EXISTS (SELECT 1 FROM gp_segment_id_oob_base WHERE gp_segment_id = 99)
+  ORDER BY a;
+ a 
+---
+(0 rows)
+
+UPDATE gp_segment_id_oob_rep SET a = a
+  WHERE EXISTS (SELECT 1 FROM gp_segment_id_oob_base WHERE gp_segment_id = 99);
+DELETE FROM gp_segment_id_oob_rep
+  WHERE EXISTS (SELECT 1 FROM gp_segment_id_oob_base WHERE gp_segment_id = 99);
+SELECT count(*) FROM gp_segment_id_oob_rep;
+ count 
+-------
+     2
+(1 row)
+
+SELECT count(*) FROM gp_segment_id_oob_hash;
+ count 
+-------
+     2
+(1 row)
+
+RESET optimizer;
+DROP TABLE gp_segment_id_oob_rep;
+DROP TABLE gp_segment_id_oob_base;
+DROP TABLE gp_segment_id_oob_hash;

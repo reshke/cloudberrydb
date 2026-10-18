@@ -38,6 +38,7 @@ test: copy_eol
 test: copy_encoding_error
 
 test: dedupset
+test: gp_segment_id_oob
 
 test: disable_autovacuum
 test: python_processed64bit
