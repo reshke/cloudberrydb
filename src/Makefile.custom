@@ -32,3 +32,8 @@ CUSTOM_COPT += -Wno-error=gnu-variable-sized-type-not-at-end
 CUSTOM_COPT += -Wno-error=unused-function
 CUSTOM_COPT += -Wno-error=deprecated-non-prototype
 endif
+# gcc 13 false positives on this tree (planner.c clauses.c) - demote on Linux too:
+ifeq (,)
+CUSTOM_COPT += -Wno-error=maybe-uninitialized
+CUSTOM_COPT += -Wno-error=stringop-overread
+endif
