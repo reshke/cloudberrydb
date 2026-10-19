@@ -393,4 +393,7 @@ test: dboptions
 # test dispatch and result handling of gp_log_memory_backend_contexts
 test: gp_log_mem_dispatch
 
+# MERGE on a replicated table: source broadcast, per-seg uniformity, SPI rowcount
+test: merge_replicated
+
 # end of tests
