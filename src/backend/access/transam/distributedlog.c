@@ -474,8 +474,23 @@ DistributedLog_GetDistributedXid(
 	int			entryno = TransactionIdToEntry(localXid);
 	int			slotno;
 	DistributedLogEntry *ptr;
+	TransactionId oldestXmin;
 
 	Assert(!IS_QUERY_DISPATCHER());
+
+	/*
+	 * If the requested xid is below the truncation horizon, its entry
+	 * has already been trimmed: return "not found" cleanly instead of
+	 * attempting an SLRU read of a removed page.
+	 */
+	oldestXmin = (TransactionId) pg_atomic_read_u32(
+		(pg_atomic_uint32 *) &DistributedLogShared->oldestXmin);
+	if (oldestXmin != InvalidTransactionId &&
+		TransactionIdPrecedes(localXid, oldestXmin))
+	{
+		*distribXid = 0;
+		return;
+	}
 
 	slotno = SimpleLruReadPage_ReadOnly(DistributedLogCtl, page, localXid);
 	ptr = (DistributedLogEntry *) DistributedLogCtl->shared->page_buffer[slotno];
@@ -1068,8 +1083,43 @@ DistributedLog_redo(XLogReaderState *record)
 	else if (info == DISTRIBUTEDLOG_TRUNCATE)
 	{
 		int			page;
+		TransactionId cutoffXid;
+		TransactionId curOldestXmin;
 
 		memcpy(&page, XLogRecGetData(record), sizeof(int));
+
+		/*
+		 * The primary already removed all DistributedLog pages older
+		 * than the cutoff page.  Advance our oldestXmin to the first
+		 * xid on the cutoff page, so that standby/mirror readers
+		 * resolving pre-truncation gxids take the soft "below
+		 * oldestXmin => not found" path in
+		 * DistributedLog_CommittedCheck() /
+		 * DistributedLog_GetDistributedXid() instead of erroring out
+		 * when the SLRU read fails on a truncated segment.
+		 *
+		 * The loop also covers a replay that runs before the first
+		 * DistributedLog_AdvanceOldestXmin() call, where the shared
+		 * oldestXmin still holds its InvalidTransactionId initial
+		 * value: nothing better has been written yet, and the cutoff
+		 * is a valid lower bound, so CAS from 0 installs it.
+		 */
+		cutoffXid = ((TransactionId) page) * ENTRIES_PER_PAGE;
+		if (cutoffXid < FirstNormalTransactionId)
+			cutoffXid = FirstNormalTransactionId;
+
+		curOldestXmin = (TransactionId) pg_atomic_read_u32(
+			(pg_atomic_uint32 *) &DistributedLogShared->oldestXmin);
+		while (TransactionIdPrecedes(curOldestXmin, cutoffXid))
+		{
+			uint32		expected = (uint32) curOldestXmin;
+
+			if (pg_atomic_compare_exchange_u32(
+					(pg_atomic_uint32 *) &DistributedLogShared->oldestXmin,
+					&expected, (uint32) cutoffXid))
+				break;
+			curOldestXmin = expected;
+		}
 
 		elog((Debug_print_full_dtm ? LOG : DEBUG5),
 			 "Redo DISTRIBUTEDLOG_TRUNCATE page %d",
