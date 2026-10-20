@@ -4408,6 +4408,20 @@ AdjustReplicatedTableCounts(EState *estate)
 	if (Gp_role != GP_ROLE_DISPATCH)
 		return;
 
+	/*
+	 * If the top-level command is a SELECT (e.g. one carrying a
+	 * data-modifying CTE like "WITH x AS (INSERT/UPDATE/DELETE ...)
+	 * SELECT ..."), each segment performed its slice of the work on its
+	 * own copy of the replicated table, and es_processed here at the QD
+	 * already holds the logical row count that reached the destination.
+	 * Dividing it by numsegments would corrupt SPI's processed count and
+	 * trip the SPI tuple count consistency check, so only divide for
+	 * top-level commands whose per-segment row counts are really summed
+	 * over the replicated copies.
+	 */
+	if (estate->es_plannedstmt &&
+		estate->es_plannedstmt->commandType == CMD_SELECT)
+		return;
 	/* check if result_relations contain replicated table*/
 	foreach(l, estate->es_opened_result_relations)
 	{

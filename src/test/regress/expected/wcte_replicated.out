@@ -1,0 +1,109 @@
+--
+-- wCTE on replicated tables: verify that the reported row count reflects
+-- the logical rows, not the per-segment physical rows.
+--
+-- A top-level SELECT carrying a data-modifying CTE on a REPLICATED table
+-- must not have its es_processed divided by numsegments on the QD
+-- (AdjustReplicatedTableCounts), otherwise the SPI tuple count
+-- consistency check fails and row counts are wrong.
+--
+CREATE TEMP TABLE wcte_repl (a int, b int) DISTRIBUTED REPLICATED;
+CREATE TEMP TABLE wcte_hash (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO wcte_repl SELECT i, i FROM generate_series(1, 10) i;
+INSERT INTO wcte_hash SELECT i, i FROM generate_series(1, 10) i;
+-- SELECT with UPDATE CTE on replicated table
+WITH x AS (UPDATE wcte_repl SET b = b + 1 RETURNING a) SELECT count(*) FROM x;
+ count 
+-------
+    10
+(1 row)
+
+-- SELECT with DELETE CTE on replicated table
+WITH x AS (DELETE FROM wcte_repl WHERE a <= 2 RETURNING a) SELECT count(*) FROM x;
+ count 
+-------
+     2
+(1 row)
+
+-- SELECT with INSERT CTE on replicated table
+WITH x AS (INSERT INTO wcte_repl SELECT i, i FROM generate_series(20, 25) i RETURNING a) SELECT count(*) FROM x;
+ count 
+-------
+     6
+(1 row)
+
+SELECT count(*) FROM wcte_repl;
+ count 
+-------
+    14
+(1 row)
+
+-- the rows must not have been duplicated by the replicated execution
+SELECT count(*), count(distinct a) FROM wcte_repl;
+ count | count 
+-------+-------
+    14 |    14
+(1 row)
+
+-- through SPI (plpgsql): the SPI tuple count consistency check must pass
+-- and ROW_COUNT must report the logical number of rows processed
+CREATE FUNCTION wcte_spi_rc() RETURNS bigint AS $$
+DECLARE
+    n bigint;
+BEGIN
+    EXECUTE 'WITH x AS (UPDATE wcte_repl SET b = b + 1 RETURNING a)
+             SELECT count(*) FROM x';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RETURN n;
+END $$ LANGUAGE plpgsql;
+-- ROW_COUNT of the top-level SELECT over the wCTE: one output row (count)
+SELECT wcte_spi_rc();
+ wcte_spi_rc 
+-------------
+           1
+(1 row)
+
+DROP FUNCTION wcte_spi_rc();
+CREATE FUNCTION wcte_spi_rows() RETURNS bigint AS $$
+DECLARE
+    n bigint;
+BEGIN
+    EXECUTE 'WITH x AS (UPDATE wcte_repl SET b = b + 1 RETURNING a)
+             SELECT a FROM x ORDER BY a';
+    GET DIAGNOSTICS n = ROW_COUNT;
+    RETURN n;
+END $$ LANGUAGE plpgsql;
+-- ROW_COUNT of the top-level SELECT returning the wCTE's RETURNING rows:
+-- the logical 14 updated rows, not divided by numsegments
+SELECT wcte_spi_rows();
+ wcte_spi_rows 
+---------------
+            14
+(1 row)
+
+DROP FUNCTION wcte_spi_rows();
+-- regression: top-level DML on replicated tables still reports logical
+-- rows (per-segment counts are summed and divided by numsegments)
+UPDATE wcte_repl SET b = b + 1;
+DELETE FROM wcte_repl WHERE a = 20;
+INSERT INTO wcte_repl VALUES (99, 99);
+SELECT count(*) FROM wcte_repl;
+ count 
+-------
+    14
+(1 row)
+
+-- hash-distributed tables are unaffected
+WITH x AS (UPDATE wcte_hash SET b = b + 1 RETURNING a) SELECT count(*) FROM x;
+ count 
+-------
+    10
+(1 row)
+
+UPDATE wcte_hash SET b = b + 1;
+SELECT count(*) FROM wcte_hash;
+ count 
+-------
+    10
+(1 row)
+
