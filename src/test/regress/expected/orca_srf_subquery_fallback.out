@@ -1,0 +1,181 @@
+-- start_ignore
+DROP SCHEMA IF EXISTS orca_srf_subquery_fallback CASCADE;
+NOTICE:  schema "orca_srf_subquery_fallback" does not exist, skipping
+CREATE SCHEMA orca_srf_subquery_fallback;
+SET search_path TO orca_srf_subquery_fallback;
+-- end_ignore
+-- Test that queries containing a set-returning function (SRF) inside a
+-- subquery (in the subquery's target list or quals, including deeper
+-- subqueries) fall back from ORCA to the Postgres planner, which plans
+-- them correctly. Before this fallback, ORCA produced plans that crashed
+-- with internal assertion errors ("Expected no more than one row to be
+-- returned by expression") or returned wrong results.
+set optimizer=on;
+CREATE TABLE srf_t (k int, v int) DISTRIBUTED BY (k);
+INSERT INTO srf_t SELECT g, g*10 FROM generate_series(1,10) g;
+CREATE TABLE srf_small (k int, c int) DISTRIBUTED BY (k);
+INSERT INTO srf_small VALUES (1, 100), (2, 200), (3, 300);
+-- SRF in the target list of a subquery qual
+explain (costs off)
+update srf_t set v = v + 1
+where exists (select from (select generate_series(1,3) g) s where s.g = srf_t.k);
+              QUERY PLAN              
+--------------------------------------
+ Update on srf_t
+   ->  Hash Semi Join
+         Hash Cond: (srf_t.k = s.g)
+         ->  Seq Scan on srf_t
+         ->  Hash
+               ->  Subquery Scan on s
+                     ->  ProjectSet
+                           ->  Result
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+-- aggregate over SRF in a subquery qual (agg->SRF->WHERE shape)
+explain (costs off)
+update srf_t set v = v + 1
+where exists (select 1 from (select count(*) over () c, generate_series(1, srf_small.k) g from srf_small) s where s.g > 0);
+                    QUERY PLAN                    
+--------------------------------------------------
+ Update on srf_t
+   InitPlan 1 (returns $0)  (slice1)
+     ->  Gather Motion 2:1  (slice2; segments: 2)
+           ->  Subquery Scan on s
+                 Filter: (s.g > 0)
+                 ->  ProjectSet
+                       ->  Seq Scan on srf_small
+   ->  Result
+         One-Time Filter: $0
+         ->  Seq Scan on srf_t
+ Optimizer: Postgres query optimizer
+(11 rows)
+
+-- scalar subquery containing an SRF: ORCA used to plan this shape in a way
+-- that broke the single-row guarantee of scalar subqueries
+explain (costs off)
+update srf_t set v = v + 1
+where k = (select 1 from (select generate_series(1,3) g) s where s.g > 0);
+             QUERY PLAN              
+-------------------------------------
+ Update on srf_t
+   InitPlan 1 (returns $0)  (slice1)
+     ->  Subquery Scan on s
+           Filter: (s.g > 0)
+           ->  ProjectSet
+                 ->  Result
+   ->  Seq Scan on srf_t
+         Filter: (k = $0)
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+-- executable variants: the Postgres planner (used after the fallback) must
+-- produce the correct results
+update srf_t set v = v + 1
+where exists (select from (select generate_series(1,3) g) s where s.g = srf_t.k);
+select k, v from srf_t order by k;
+ k  |  v  
+----+-----
+  1 |  11
+  2 |  21
+  3 |  31
+  4 |  40
+  5 |  50
+  6 |  60
+  7 |  70
+  8 |  80
+  9 |  90
+ 10 | 100
+(10 rows)
+
+update srf_t set v = v + 1
+where exists (select 1 from (select count(*) over () c, generate_series(1, srf_small.k) g from srf_small) s where s.g > 0);
+select k, v from srf_t order by k;
+ k  |  v  
+----+-----
+  1 |  12
+  2 |  22
+  3 |  32
+  4 |  41
+  5 |  51
+  6 |  61
+  7 |  71
+  8 |  81
+  9 |  91
+ 10 | 101
+(10 rows)
+
+-- SELECT with a correlated SRF inside the subquery target list
+select k from srf_t
+where exists (select 1 from (select generate_series(1, k) g) s where g = 3)
+order by k;
+ k  
+----
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+ 10
+(8 rows)
+
+-- deeper nesting: the SRF is two subqueries down
+select k from srf_t
+where exists (select 1
+              from (select * from (select generate_series(1, k) g) s0) s
+              where s.g = k)
+order by k;
+ k  
+----
+  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+ 10
+(10 rows)
+
+-- SRF inside a CTE: CTEScans are also subqueries, fall back as well
+explain (costs off)
+select k from srf_t
+where k in (with c as (select generate_series(1, 5) g) select g from c)
+order by k;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Gather Motion 2:1  (slice1; segments: 2)
+   Merge Key: srf_t.k
+   ->  Sort
+         Sort Key: srf_t.k
+         ->  Hash Semi Join
+               Hash Cond: (srf_t.k = (generate_series(1, 5)))
+               ->  Seq Scan on srf_t
+               ->  Hash
+                     ->  ProjectSet
+                           ->  Result
+ Optimizer: Postgres query optimizer
+(11 rows)
+
+-- control query without an SRF: ORCA still plans it
+explain (costs off)
+select k from srf_t where exists (select 1 from srf_small where srf_small.k = srf_t.k) order by k;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Gather Motion 2:1  (slice1; segments: 2)
+   Merge Key: srf_t.k
+   ->  Sort
+         Sort Key: srf_t.k
+         ->  Hash Semi Join
+               Hash Cond: (srf_t.k = srf_small.k)
+               ->  Seq Scan on srf_t
+                     Filter: (NOT (k IS NULL))
+               ->  Hash
+                     ->  Seq Scan on srf_small
+ Optimizer: GPORCA
+(11 rows)
+

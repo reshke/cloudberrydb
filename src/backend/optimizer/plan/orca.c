@@ -193,6 +193,175 @@ query_contains_support_functions(Query *query)
 }
 
 /*
+ * srf_subquery_qual_context
+ *		Context for srf_subquery_qual_walker, keeping track of whether we
+ *		are currently examining a subquery (as opposed to the top-level
+ *		query).
+ */
+typedef struct
+{
+	bool		in_subquery;		/* we are inside a (sub)query */
+} srf_subquery_qual_context;
+
+/*
+ * srf_subquery_qual_walker
+ *		Detect a set-returning function (SRF) appearing inside a subquery
+ *		of the query being checked - in the subquery's target list or in
+ *		its quals, including SRFs hidden within deeper subqueries.
+ *
+ * ORCA mis-plans such shapes: e.g. a scalar subquery like
+ *		(select 1 from (select generate_series(1,3) g) s where g > 0)
+ * is translated into a plan that breaks the single-row guarantee of scalar
+ * subqueries, producing internal "Expected no more than one row to be
+ * returned by expression" assertion failures on the segments, and for
+ * other shapes wrong results. Callers use this to fall back to the
+ * Postgres planner, which handles these queries correctly.
+ */
+static bool
+srf_subquery_qual_walker(Node *node, void *context)
+{
+	srf_subquery_qual_context *ctx = (srf_subquery_qual_context *) context;
+	Query	   *query;
+	ListCell   *lc;
+	bool		save_in_subquery;
+
+	if (node == NULL)
+		return false;
+
+	/*
+	 * A set-returning function. It only matters if we are inside a
+	 * subquery; a SRF in the top-level target list is already handled by
+	 * the ordinary fallback checks. Either way, keep walking so that we
+	 * don't miss SubLinks in its arguments.
+	 */
+	if (IsA(node, FuncExpr) &&
+		((FuncExpr *) node)->funcretset && ctx->in_subquery)
+		return true;
+
+	if (IsA(node, Query))
+	{
+		query = (Query *) node;
+
+		save_in_subquery = ctx->in_subquery;
+		ctx->in_subquery = true;
+
+		/* check this (sub)query's target list, quals and HAVING clause */
+		if (expression_tree_walker((Node *) query->targetList,
+								  srf_subquery_qual_walker,
+								  ctx))
+		{
+			ctx->in_subquery = save_in_subquery;
+			return true;
+		}
+		if (query->jointree != NULL &&
+			expression_tree_walker(query->jointree->quals,
+								   srf_subquery_qual_walker,
+								   ctx))
+		{
+			ctx->in_subquery = save_in_subquery;
+			return true;
+		}
+		if (expression_tree_walker(query->havingQual,
+								   srf_subquery_qual_walker,
+								   ctx))
+		{
+			ctx->in_subquery = save_in_subquery;
+			return true;
+		}
+
+		/* recurse into subqueries in the range table (incl. deeper ones) */
+		foreach(lc, query->rtable)
+		{
+			RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+			if (rte->rtekind == RTE_SUBQUERY)
+			{
+				if (srf_subquery_qual_walker((Node *) rte->subquery, ctx))
+				{
+					ctx->in_subquery = save_in_subquery;
+					return true;
+				}
+			}
+		}
+
+		/* recurse into CTE queries */
+		foreach(lc, query->cteList)
+		{
+			CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+
+			if (!cte->cterecursive &&
+				IsA(cte->ctequery, Query) &&
+				srf_subquery_qual_walker(cte->ctequery, ctx))
+			{
+				ctx->in_subquery = save_in_subquery;
+				return true;
+			}
+		}
+
+		ctx->in_subquery = save_in_subquery;
+		return false;
+	}
+
+	return expression_tree_walker(node, srf_subquery_qual_walker, ctx);
+}
+
+/*
+ * query_contains_srf_in_subquery
+ *		Check if the query contains a set-returning function inside one of
+ *		its subqueries (a SubLink subselect, a subquery range-table entry,
+ *		or a CTE), anywhere in the subquery tree.
+ */
+static bool
+query_contains_srf_in_subquery(Query *query)
+{
+	srf_subquery_qual_context ctx;
+	ListCell   *lc;
+
+	ctx.in_subquery = false;
+
+	/*
+	 * Walk the top-level expressions; the walker recurses into SubLink
+	 * subselects, from where in-subquery detection begins.
+	 */
+	if (expression_tree_walker((Node *) query->targetList,
+							   srf_subquery_qual_walker,
+							   &ctx))
+		return true;
+	if (query->jointree != NULL &&
+		expression_tree_walker(query->jointree->quals,
+							   srf_subquery_qual_walker,
+							   &ctx))
+		return true;
+	if (expression_tree_walker(query->havingQual,
+							   srf_subquery_qual_walker,
+							   &ctx))
+		return true;
+
+	/* subqueries in the range table */
+	foreach(lc, query->rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+		if (rte->rtekind == RTE_SUBQUERY &&
+			srf_subquery_qual_walker((Node *) rte->subquery, &ctx))
+			return true;
+	}
+
+	/* CTE queries */
+	foreach(lc, query->cteList)
+	{
+		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+
+		if (!cte->cterecursive &&
+			IsA(cte->ctequery, Query) &&
+			srf_subquery_qual_walker((Node *) cte->ctequery, &ctx))
+			return true;
+	}
+
+	return false;
+}
+
+/*
  * optimize_query
  *		Plan the query using the GPORCA planner
  *
@@ -217,6 +386,18 @@ optimize_query(Query *parse, int cursorOptions, ParamListInfo boundParams, Optim
 	 */
 	if ((cursorOptions & CURSOR_OPT_UPDATABLE) != 0)
 		return NULL;
+
+	/*
+	 * Fall back to the Postgres planner when a set-returning function
+	 * appears inside a subquery. ORCA mis-plans these queries (internal
+	 * assertion failures, wrong results); the Postgres planner handles
+	 * them correctly.
+	 */
+	if (query_contains_srf_in_subquery(parse))
+	{
+		elog(DEBUG1, "set-returning function in subquery, falling back to the Postgres planner");
+		return NULL;
+	}
 
 	/*
 	 * Initialize a dummy PlannerGlobal struct. ORCA doesn't use it, but the
