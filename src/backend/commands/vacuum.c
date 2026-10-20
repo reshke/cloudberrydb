@@ -1080,11 +1080,17 @@ expand_vacuum_rel(VacuumRelation *vrel, MemoryContext vac_context,
 		 */
 		if ((options & VACOPT_ROOTONLY) != 0)
 		{
-			if (classForm->relkind != RELKIND_PARTITIONED_TABLE ||
-				classForm->relispartition)
+			if (classForm->relispartition)
 			{
 				ereport(WARNING,
 						(errmsg("skipping \"%s\" --- cannot analyze a non-root partition using ANALYZE ROOTPARTITION",
+								NameStr(classForm->relname))));
+				skip_this = true;
+			}
+			else if (classForm->relkind != RELKIND_PARTITIONED_TABLE)
+			{
+				ereport(WARNING,
+						(errmsg("skipping \"%s\" --- cannot analyze a non-partitioned table using ANALYZE ROOTPARTITION",
 								NameStr(classForm->relname))));
 				skip_this = true;
 			}
