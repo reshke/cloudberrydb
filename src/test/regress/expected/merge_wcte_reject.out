@@ -1,0 +1,93 @@
+-- start_ignore
+DROP SCHEMA IF EXISTS orca_merge_wcte_reject CASCADE;
+NOTICE:  schema "orca_merge_wcte_reject" does not exist, skipping
+CREATE SCHEMA orca_merge_wcte_reject;
+SET search_path TO orca_merge_wcte_reject;
+-- end_ignore
+-- Test that MERGE combined with data-modifying CTEs is rejected cleanly
+-- (parse-time, ERRCODE_FEATURE_NOT_SUPPORTED) instead of failing with an
+-- internal two-writer-gang error or silently dropping the CTE's data
+-- modification.
+set optimizer=on;
+CREATE TABLE m_target (k int, v int) DISTRIBUTED BY (k);
+INSERT INTO m_target SELECT g, g*10 FROM generate_series(1,10) g;
+CREATE TABLE m_src (k int) DISTRIBUTED BY (k);
+INSERT INTO m_src VALUES (1), (2);
+-- data-modifying CTEs are rejected under both planners
+with c_ins as (insert into m_src values (3) returning 3)
+merge into m_target t using m_src s on t.k = s.k
+when matched then update set v = v + 1;
+ERROR:  data-modifying WITH clause is not supported in a MERGE statement
+with c_upd as (update m_src set k = k returning k)
+merge into m_target t using m_src s on t.k = s.k
+when matched then update set v = v + 1;
+ERROR:  data-modifying WITH clause is not supported in a MERGE statement
+with c_del as (delete from m_src returning k)
+merge into m_target t using m_src s on t.k = s.k
+when matched then update set v = v + 1;
+ERROR:  data-modifying WITH clause is not supported in a MERGE statement
+set optimizer=off;
+with c_ins as (insert into m_src values (3) returning 3)
+merge into m_target t using m_src s on t.k = s.k
+when matched then update set v = v + 1;
+ERROR:  data-modifying WITH clause is not supported in a MERGE statement
+-- the rejected statements must not have modified anything
+set optimizer=on;
+select count(*) from m_src;
+ count 
+-------
+     2
+(1 row)
+
+select k, v from m_target order by k;
+ k  |  v  
+----+-----
+  1 |  10
+  2 |  20
+  3 |  30
+  4 |  40
+  5 |  50
+  6 |  60
+  7 |  70
+  8 |  80
+  9 |  90
+ 10 | 100
+(10 rows)
+
+-- plain MERGE keeps working
+merge into m_target t using m_src s on t.k = s.k
+when matched then update set v = v + 1;
+select k, v from m_target order by k;
+ k  |  v  
+----+-----
+  1 |  11
+  2 |  21
+  3 |  30
+  4 |  40
+  5 |  50
+  6 |  60
+  7 |  70
+  8 |  80
+  9 |  90
+ 10 | 100
+(10 rows)
+
+-- MERGE with a read-only CTE keeps working
+with s as (select k from m_src)
+merge into m_target t using s on t.k = s.k
+when matched then update set v = v + 1;
+select k, v from m_target order by k;
+ k  |  v  
+----+-----
+  1 |  12
+  2 |  22
+  3 |  30
+  4 |  40
+  5 |  50
+  6 |  60
+  7 |  70
+  8 |  80
+  9 |  90
+ 10 | 100
+(10 rows)
+

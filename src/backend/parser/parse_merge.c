@@ -120,6 +120,19 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 
 		qry->cteList = transformWithClause(pstate, stmt->withClause);
 		qry->hasModifyingCTE = pstate->p_hasModifyingCTE;
+
+		/*
+		 * A MERGE statement cannot be combined with data-modifying CTEs:
+		 * attempting to plan such a statement would need two writer gangs
+		 * (one for the CTE, one for the MERGE) and fails with an internal
+		 * error. Reject it cleanly at parse time instead. (Without this
+		 * check the CTE is silently dropped on some configurations, so
+		 * the data modification is lost.)
+		 */
+		if (qry->hasModifyingCTE)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("data-modifying WITH clause is not supported in a MERGE statement")));
 	}
 
 	/*
