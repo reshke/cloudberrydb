@@ -149,6 +149,75 @@ LocalDistribXact_DisplayString(int pgprocno)
 
 /*  ***************************************************************************** */
 
+/*
+ * LocalDistribXact_FindByLocalXid
+ *
+ * Resolve a local xid to the gxid of the in-flight distributed transaction
+ * it participates in, if any.  This is a lockless scan over the per-proc
+ * LocalDistribXact registry (the PGPROC-adjacent shared array): both live
+ * writer backends (LOCALDISTRIBXACT_STATE_ACTIVE) and the dummy procs
+ * created for prepared distributed transactions
+ * (LOCALDISTRIBXACT_STATE_PREPARED) carry the local xid <-> distribXid
+ * link.
+ *
+ * This is used by the distributed-snapshot visibility code when the
+ * distributed log lookup misses (the distributed transaction is still
+ * in-flight, or its entry has been truncated), so that an in-flight dtx
+ * participant is resolved via its gxid and evaluated against the
+ * distributed snapshot instead of falling back to local-xid-only logic
+ * (which could yield partial-visibility verdicts for a 2PC transaction
+ * that is already committed locally on one segment but not another).
+ *
+ * Returns the distribXid of the registered participant, or
+ * InvalidDistributedTransactionId when this local xid does not belong to
+ * any in-flight distributed transaction.
+ */
+DistributedTransactionId
+LocalDistribXact_FindByLocalXid(TransactionId localXid)
+{
+	int			i;
+	int			nprocs;
+
+	if (!TransactionIdIsValid(localXid))
+		return InvalidDistributedTransactionId;
+
+	nprocs = ProcGlobal->allProcCount;
+
+	for (i = 0; i < nprocs; i++)
+	{
+		volatile PGPROC *proc = &ProcGlobal->allProcs[i];
+		LocalDistribXactState	state;
+		DistributedTransactionId	gxid;
+
+		if (!TransactionIdEquals(proc->xid, localXid))
+			continue;
+
+		state = proc->localDistribXactData.state;
+		if (state != LOCALDISTRIBXACT_STATE_ACTIVE &&
+			state != LOCALDISTRIBXACT_STATE_PREPARED)
+			continue;
+
+		gxid = proc->localDistribXactData.distribXid;
+		if (gxid == InvalidDistributedTransactionId)
+			continue;
+
+		/*
+		 * Re-check the xid after fetching the gxid: the owning backend may
+		 * have finished its transaction and recycled its slot while we
+		 * read it.  If the registry entry is still for the same in-flight
+		 * local xid, the link we fetched is the one to report.
+		 */
+		if (!TransactionIdEquals(proc->xid, localXid))
+			continue;
+
+		return gxid;
+	}
+
+	return InvalidDistributedTransactionId;
+}
+
+/*  ***************************************************************************** */
+
 /* Memory context for long-lived local-distributed commit pairs. */
 static MemoryContext LocalDistribCacheMemCxt = NULL;
 

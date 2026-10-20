@@ -2549,6 +2549,16 @@ StartTransaction(void)
 	/*
 	 * MPP Modification
 	 *
+	 * Clear any stale distribXid linkage left over from a previous
+	 * transaction of this backend, so that a recycled local xid can never
+	 * be resolved to a dead distributed transaction through the
+	 * LocalDistribXact registry.  Contexts that participate in a new
+	 * distributed transaction set distribXid again below (or when the
+	 * gxid arrives from the QD).
+	 */
+	MyProc->localDistribXactData.distribXid = InvalidDistributedTransactionId;
+
+	/*
 	 * If we're an executor and don't have a valid QDSentXID, then we're starting
 	 * a purely-local transaction.
 	 */

@@ -111,10 +111,20 @@ DistributedSnapshotWithLocalMapping_CommittedTest(
 		{
 			/*
 			 * The distributedlog doesn't know of the transaction. It can be
-			 * local-only, or still in-progress. The caller will proceed to do
-			 * a local visibility check, which will determine which it is.
+			 * local-only, or still in-progress. In the latter case the local
+			 * xid is registered in the LocalDistribXact registry (per
+			 * participant of the in-flight distributed transaction), so
+			 * resolve the gxid via the registry and fall through to the
+			 * normal distributed-snapshot evaluation below (treat it as
+			 * in-doubt / in-flight per the distributed snapshot rules).
+			 * Only if we cannot find such a registration will the caller
+			 * proceed to a local visibility check, which will determine
+			 * whether it is local-only or still in-progress.
 			 */
-			return DISTRIBUTEDSNAPSHOT_COMMITTED_UNKNOWN;
+			distribXid = LocalDistribXact_FindByLocalXid(localXid);
+
+			if (distribXid == InvalidDistributedTransactionId)
+				return DISTRIBUTEDSNAPSHOT_COMMITTED_UNKNOWN;
 		}
 	}
 

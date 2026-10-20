@@ -46,6 +46,15 @@ extern void LocalDistribXact_ChangeState(int pgprocno,
 
 extern char* LocalDistribXact_DisplayString(int pgprocno);
 
+/*
+ * Locklessly scan the per-proc LocalDistribXact registry (PGPROC array) for
+ * an in-flight distributed transaction (an ACTIVE or PREPARED participant)
+ * whose local xid matches.  Returns its distribXid, or
+ * InvalidDistributedTransactionId if no such in-flight participant exists.
+ */
+extern DistributedTransactionId LocalDistribXact_FindByLocalXid(
+	TransactionId					localXid);
+
 extern bool LocalDistribXactCache_CommittedFind(
 	TransactionId						localXid,
 	DistributedTransactionId			*distribXid);

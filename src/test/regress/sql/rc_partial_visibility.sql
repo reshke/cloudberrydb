@@ -1,0 +1,51 @@
+-- A14: RC partial visibility of in-flight 2PC (distributed prepared)
+-- transactions on a primary.  Deterministic subset only (see
+-- ~/fuzzing/bugs/A14/repro/rcv_harness.sh for the heavy randomized
+-- RED/GREEN concurrency harness that found "ca != cb" partial-visibility
+-- sightings of pairs {t_a(k), t_b(v)} written by multi-segment distributed
+-- transactions): here we check the stable properties --
+--   1. a multi-segment distributed INSERT pair commits atomically
+--      (both sides visible immediately after COMMIT, with an implicit
+--      distributed 2PC PREPARE/COMMIT PREPARED underneath);
+--   2. a ROLLBACKed pair leaves both sides invisible;
+--   3. no prepared-xact entries leak (pg_prepared_xacts is empty).
+-- Explicit PREPARE TRANSACTION is not accepted from the QD on CBDB, so the
+-- in-flight PREPARED window is exercised by the sessionless harness, not
+-- here.
+
+CREATE SCHEMA rcv_regress;
+SET client_min_messages TO warning;
+
+CREATE TABLE rcv_regress.t_a(k int, v int) DISTRIBUTED BY (k);
+CREATE TABLE rcv_regress.t_b(k int, v int) DISTRIBUTED BY (v);
+
+-- 1. atomic pair commit (multi-segment, implicit distributed 2PC)
+BEGIN;
+INSERT INTO rcv_regress.t_a VALUES (1, 1);
+INSERT INTO rcv_regress.t_b VALUES (1, 2);
+COMMIT;
+
+SELECT (SELECT count(*) FROM rcv_regress.t_a WHERE k = 1) AS ca,
+       (SELECT count(*) FROM rcv_regress.t_b WHERE v = 2) AS cb;
+
+-- 2. atomic pair rollback
+BEGIN;
+INSERT INTO rcv_regress.t_a VALUES (2, 2);
+INSERT INTO rcv_regress.t_b VALUES (2, 3);
+ROLLBACK;
+
+SELECT (SELECT count(*) FROM rcv_regress.t_a WHERE k = 2) AS ca,
+       (SELECT count(*) FROM rcv_regress.t_b WHERE v = 3) AS cb;
+
+-- 3. a fresh RC statement sees both sides of every committed pair
+BEGIN;
+INSERT INTO rcv_regress.t_a VALUES (3, 3);
+INSERT INTO rcv_regress.t_b VALUES (3, 4);
+COMMIT;
+SELECT (SELECT count(*) FROM rcv_regress.t_a WHERE k IN (1, 2, 3)) AS ca,
+       (SELECT count(*) FROM rcv_regress.t_b WHERE v IN (2, 3, 4)) AS cb;
+
+-- 4. no leaked distributed prepared transactions
+SELECT count(*) FROM pg_prepared_xacts;
+
+DROP SCHEMA rcv_regress CASCADE;
