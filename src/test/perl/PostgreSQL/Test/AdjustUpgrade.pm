@@ -97,23 +97,7 @@ sub adjust_database_contents
 			'drop extension if exists test_ext7');
 	}
 
-	# We can no longer upgrade bpchar indexes that claim deduplication ability
-	# (amcheck will complain about them), so drop them if source is pre-v14.
-	if ($old_version < 14 && $dbnames{"regression"})
-	{
-		_add_st($result, 'regression',
-			'drop index if exists public.hslot_hubname',
-			'drop index if exists public.hslot_name',
-			'drop index if exists public.hub_name',
-			'drop index if exists public.iface_name',
-			'drop index if exists public.phone_name',
-			'drop index if exists public.pline_name',
-			'drop index if exists public.pslot_name',
-			'drop index if exists public.room_rno',
-			'drop index if exists public.wslot_name');
-	}
-
-	# stuff not supported from release 14
+	# Stuff not supported from release 14
 	if ($old_version < 14)
 	{
 		_add_st($result, 'regression',
@@ -121,6 +105,29 @@ sub adjust_database_contents
 			'drop operator #%# (bigint,NONE)',
 			'drop operator if exists !=- (bigint,NONE)',
 			'drop operator if exists #@%# (bigint,NONE)');
+
+		# Before PostgreSQL 14, seg_out() printed the upper-bound certainty
+		# indicator incorrectly.  Remove that row before comparing upgrades.
+		if ($dbnames{contrib_regression_seg})
+		{
+			_add_st($result, 'contrib_regression_seg',
+				"delete from test_seg where s = '4.6 .. ~7.0'");
+		}
+
+		# Older bpchar indexes may incorrectly claim deduplication is safe.
+		if ($dbnames{'regression'})
+		{
+			_add_st($result, 'regression',
+				'drop index if exists public.hslot_hubname',
+				'drop index if exists public.hslot_name',
+				'drop index if exists public.hub_name',
+				'drop index if exists public.iface_name',
+				'drop index if exists public.phone_name',
+				'drop index if exists public.pline_name',
+				'drop index if exists public.pslot_name',
+				'drop index if exists public.room_rno',
+				'drop index if exists public.wslot_name');
+		}
 	}
 
 	# get rid of dblink's dependencies on regress.so
@@ -135,14 +142,6 @@ sub adjust_database_contents
 			$result, $regrdb,
 			'drop function if exists public.putenv(text)',
 			'drop function if exists public.wait_pid(integer)');
-	}
-
-	# Before PostgreSQL 14, seg_out() printed the upper-bound certainty
-	# indicator incorrectly.  Remove that row before comparing upgrades.
-	if ($old_version < 14 && $dbnames{contrib_regression_seg})
-	{
-		_add_st($result, 'contrib_regression_seg',
-			"delete from test_seg where s = '4.6 .. ~7.0'");
 	}
 
 	# user table OIDs are gone from release 12 on
@@ -274,6 +273,28 @@ sub adjust_old_dumpfile
 
 	# Version comments will certainly not match.
 	$dump =~ s/^-- Dumped from database version.*\n//mg;
+
+	if ($old_version < 14)
+	{
+		# Remove mentions of extended hash functions.
+		$dump =~ s {^(\s+OPERATOR\s1\s=\(integer,integer\))\s,\n
+                    \s+FUNCTION\s2\s\(integer,\sinteger\)\spublic\.part_hashint4_noop\(integer,bigint\);}
+				   {$1;}mxg;
+		$dump =~ s {^(\s+OPERATOR\s1\s=\(text,text\))\s,\n
+                    \s+FUNCTION\s2\s\(text,\stext\)\spublic\.part_hashtext_length\(text,bigint\);}
+				   {$1;}mxg;
+	}
+
+	if ($old_version < 14)
+	{
+		# Fix up some rule definitions that ruleutils now prints with AS.
+		$dump =~ s {DO INSTEAD  UPDATE public\.rules_log trgt SET tag}
+		{DO INSTEAD  UPDATE public.rules_log AS trgt SET tag};
+		$dump =~ s {UPDATE public\.int4_tbl trgt_1 SET}
+		{UPDATE public.int4_tbl AS trgt_1 SET};
+		$dump =~ s {DELETE FROM public\.int4_tbl trgt_1}
+		{DELETE FROM public.int4_tbl AS trgt_1};
+	}
 
 	# Change trigger definitions to say ... EXECUTE FUNCTION ...
 	if ($old_version < 12)
