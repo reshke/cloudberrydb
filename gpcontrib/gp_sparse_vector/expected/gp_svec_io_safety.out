@@ -1,0 +1,89 @@
+CREATE EXTENSION gp_sparse_vector;
+SET search_path TO sparse_vector;
+-- IO safety regression tests for svec input function.
+--
+-- Malformed run-length lists used to be accepted by svec_in and produced
+-- internally corrupt (or colliding) RLE indices and wrong dimensions:
+--   * zero/negative run lengths corrupt the RLE index entries
+--   * a run-length sum exceeding INT32_MAX silently wraps the dimension,
+--     which later drives out-of-bounds writes in sdata_to_float8arr.
+-- All of these must now be rejected at input time.
+-- Valid vectors must still work and round-trip through svec_out.
+SELECT '{1}:{1.5}'::svec;
+   svec    
+-----------
+ {1}:{1.5}
+(1 row)
+
+SELECT '{1,2}:{1.5,2.5}'::svec;
+      svec       
+-----------------
+ {1,2}:{1.5,2.5}
+(1 row)
+
+SELECT '{}'::svec;
+ERROR:  invalid input string for svec
+LINE 1: SELECT '{}'::svec;
+               ^
+SELECT '{2147483647}:{1}'::svec;
+       svec       
+------------------
+ {2147483647}:{1}
+(1 row)
+
+SELECT svec_return_array('{1,2}:{1.5,2.5}'::svec);
+ svec_return_array 
+-------------------
+ {1.5,2.5,2.5}
+(1 row)
+
+-- Negative run lengths: rejected.
+SELECT '{-1}:{2}'::svec;
+ERROR:  svec run lengths must be positive integers
+LINE 1: SELECT '{-1}:{2}'::svec;
+               ^
+SELECT '{-1,-1}:{1,1}'::svec;
+ERROR:  svec run lengths must be positive integers
+LINE 1: SELECT '{-1,-1}:{1,1}'::svec;
+               ^
+SELECT '{1,-200}:{1,1}'::svec;
+ERROR:  svec run lengths must be positive integers
+LINE 1: SELECT '{1,-200}:{1,1}'::svec;
+               ^
+SELECT '{-200}:{1}'::svec;
+ERROR:  svec run lengths must be positive integers
+LINE 1: SELECT '{-200}:{1}'::svec;
+               ^
+-- Zero run lengths: rejected.
+SELECT '{0,0}:{1,1}'::svec;
+ERROR:  svec run lengths must be positive integers
+LINE 1: SELECT '{0,0}:{1,1}'::svec;
+               ^
+SELECT '{0}:{1}'::svec;
+ERROR:  svec run lengths must be positive integers
+LINE 1: SELECT '{0}:{1}'::svec;
+               ^
+SELECT '{1,0}:{1,1}'::svec;
+ERROR:  svec run lengths must be positive integers
+LINE 1: SELECT '{1,0}:{1,1}'::svec;
+               ^
+-- Run-length sums above INT32_MAX: rejected instead of wrapping the
+-- dimension (this exact input used to crash the backend with SIGSEGV in
+-- sdata_to_float8arr when cast to float8[]).
+SELECT '{2147483648}:{1}'::svec;
+ERROR:  total svec dimension exceeds maximum of 2147483647
+LINE 1: SELECT '{2147483648}:{1}'::svec;
+               ^
+SELECT '{2147483648,2147483648,5}:{1,2,3}'::svec;
+ERROR:  total svec dimension exceeds maximum of 2147483647
+LINE 1: SELECT '{2147483648,2147483648,5}:{1,2,3}'::svec;
+               ^
+SELECT '{2147483647,1}:{1,2}'::svec;
+ERROR:  total svec dimension exceeds maximum of 2147483647
+LINE 1: SELECT '{2147483647,1}:{1,2}'::svec;
+               ^
+-- Mismatched counts are still rejected.
+SELECT '{1,2}:{1}'::svec;
+ERROR:  unique value count not equal to run length count
+LINE 1: SELECT '{1,2}:{1}'::svec;
+               ^

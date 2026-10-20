@@ -254,6 +254,31 @@ svec_in(PG_FUNCTION_ARGS)
 	total_value_count = 0;
 	for (int i=0;i<num_values;i++)
 	{
+		/*
+		 * Run lengths must be positive integers.  A zero or negative
+		 * run length would corrupt the RLE index: negative counts are
+		 * encoded as the negation of the value, and decoding such an
+		 * entry yields a bogus "count" (or an outright "error size"
+		 * failure later).
+		 */
+		if (u_index[i] <= 0)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("svec run lengths must be positive integers")));
+		}
+		/*
+		 * The vector dimension is maintained as an int32; reject a
+		 * total that would silently wrap around instead of storing a
+		 * bogus (possibly negative) dimension.
+		 */
+		if (u_index[i] > INT32_MAX - total_value_count)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("total svec dimension exceeds maximum of %d",
+						INT32_MAX)));
+		}
 		total_value_count+=u_index[i];
 		append_to_rle_index(index,u_index[i]);
 	}

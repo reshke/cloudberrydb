@@ -245,7 +245,20 @@ double *sdata_to_float8arr(SparseData sdata) {
 	iptr = sdata->index->data;
 	aptr = 0;
 	for (int i=0; i<sdata->unique_value_count; i++) {
-		for (j=0;j<compword_to_int8(iptr);j++,aptr++) {
+		int64 run_length = compword_to_int8(iptr);
+		/*
+		 * The RLE index is untrusted input (it can come from the
+		 * svec_recv binary path or from a corrupt/incompatible
+		 * producer); a negative or oversized count must never drive
+		 * the write loop below out of the array bounds.
+		 */
+		if (run_length < 0 || run_length > sdata->total_value_count - aptr)
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("corrupt RLE index in SparseData")));
+		}
+		for (j=0;j<run_length;j++,aptr++) {
 			array[aptr] = ((double *)(sdata->vals->data))[i];
 		}
 		iptr+=int8compstoragesize(iptr);
