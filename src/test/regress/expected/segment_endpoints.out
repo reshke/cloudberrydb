@@ -1,0 +1,30 @@
+-- A12: gp_get_segment_endpoints (oid 7181) must be EXECUTE ON ALL SEGMENTS
+-- ('s'): its C implementation errors with "could only be called on QE"
+-- unless it runs in QE role.  With the catalog default 'a' the planner may
+-- execute it on the QD and the direct call fails.  Its QD-side wrapper
+-- gp_get_endpoints (oid 7180) is EXECUTE ON COORDINATOR ('c') and dispatches
+-- "SELECT ... gp_get_segment_endpoints()" to the segments via CdbDispatchCommand.
+-- catalog state: family pinning
+SELECT proname, proexeclocation FROM pg_catalog.pg_proc
+  WHERE oid IN (7180, 7181) ORDER BY oid;
+         proname          | proexeclocation 
+--------------------------+-----------------
+ gp_get_endpoints         | c
+ gp_get_segment_endpoints | s
+(2 rows)
+
+-- direct call must execute (on all segments) without error; fresh cluster
+-- has no parallel retrieve endpoints, so the result is empty.
+SELECT count(*) AS seg_rows FROM pg_catalog.gp_get_segment_endpoints();
+ seg_rows 
+----------
+        0
+(1 row)
+
+-- QD wrapper still works
+SELECT count(*) AS cluster_rows FROM pg_catalog.gp_get_endpoints();
+ cluster_rows 
+--------------
+            0
+(1 row)
+

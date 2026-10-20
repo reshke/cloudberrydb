@@ -393,4 +393,7 @@ test: dboptions
 # test dispatch and result handling of gp_log_memory_backend_contexts
 test: gp_log_mem_dispatch
 
+# A12: gp_get_segment_endpoints must be EXECUTE ON ALL SEGMENTS (catalog pin)
+test: segment_endpoints
+
 # end of tests
