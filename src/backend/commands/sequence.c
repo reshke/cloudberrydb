@@ -747,6 +747,27 @@ nextval_oid(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(nextval_internal(relid, true, false));
 }
 
+/*
+ * Prelock a sequence on the QD, before a dispatched statement referencing it
+ * via nextval() is sent to the QEs (see prelock_nextval_sequences()).
+ */
+void
+PrelockSequenceForDispatch(Oid relid)
+{
+	SeqTable	seqelm;
+	Relation	seqrel;
+
+	init_sequence_internal(relid, &seqelm, &seqrel, true);
+
+	/*
+	 * Keep the RowExclusiveLock (owned by the top transaction, as in
+	 * lock_and_open_sequence()); the dispatcher loop runs in this backend,
+	 * so the lock is the one the QD uses to serialize against e.g.
+	 * ALTER SEQUENCE while the statement is in flight.
+	 */
+	relation_close(seqrel, NoLock);
+}
+
 void
 nextval_qd(Oid relid, int64 *plast, int64 *pcached, int64  *pincrement, bool *poverflow)
 {

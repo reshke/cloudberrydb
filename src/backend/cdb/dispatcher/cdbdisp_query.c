@@ -51,6 +51,11 @@
 #include "executor/execUtils.h"
 #include "cdb/cdbpq.h"
 #include "libpq/pqformat.h"
+#include "commands/sequence.h"
+#include "nodes/parsenodes.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/walkers.h"
+#include "utils/fmgroids.h"
 
 #define QUERY_STRING_TRUNCATE_SIZE (1024)
 
@@ -180,6 +185,73 @@ static List* process_epd_iud_internal(List* subtagdata);
  * Each QE receives its assignment as a message of type 'M' in PostgresMain().
  * The message is deserialized and processed by exec_mpp_query() in postgres.c.
  */
+/*
+ * Collect OIDs of sequences referenced by nextval(regclass) with a constant
+ * argument anywhere in a plan tree, and recreate the sequence bookkeeping so
+ * the lazily-taken RowExclusiveLock is instead held before dispatch.
+ *
+ * nextval() on a sequence is only serialized on the QD when the first
+ * sequence-value request arrives from a QE (nextval_qd() in the dispatcher
+ * loop). If ALTER SEQUENCE is granted its ShareRowExclusiveLock on the QD in
+ * the window between this statement's dispatch and that first request, the
+ * dispatched ALTER queues on the QEs behind the RowExclusiveLocks of the
+ * statement's own slices, which are waiting for their next sequence value,
+ * while the QD needs the ALTER's lock to answer them: an interconnect cycle
+ * invisible to every deadlock detector. Ordinary table DML cannot race this
+ * way because table locks are taken in the QD's InitPlan, before dispatch;
+ * locking the sequences here restores that ordering for sequences.
+ */
+typedef struct PrelockSequencesContext
+{
+	plan_tree_base_prefix base;		/* must be first; the framework needs it */
+	List	   *seqoids;
+} PrelockSequencesContext;
+
+static bool
+prelock_sequences_walker(Node *node, void *context0)
+{
+	PrelockSequencesContext *context = (PrelockSequencesContext *) context0;
+
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, FuncExpr))
+	{
+		FuncExpr  *f = (FuncExpr *) node;
+
+		if (f->funcid == F_NEXTVAL && list_length(f->args) == 1)
+		{
+			Node	   *arg = linitial(f->args);
+
+			if (IsA(arg, Const) && !((Const *) arg)->constisnull)
+				context->seqoids = list_append_unique_oid(context->seqoids,
+						DatumGetObjectId(((Const *) arg)->constvalue));
+		}
+	}
+
+	return plan_tree_walker(node, prelock_sequences_walker, context0, true);
+}
+
+static void
+prelock_nextval_sequences(PlannedStmt *stmt)
+{
+	PrelockSequencesContext context;
+	ListCell   *lc;
+
+	exec_init_plan_tree_base(&context.base, stmt);
+	context.seqoids = NIL;
+
+	prelock_sequences_walker((Node *) stmt->planTree, &context);
+
+	foreach(lc, stmt->subplans)
+		prelock_sequences_walker((Node *) lfirst(lc), &context);
+
+	foreach(lc, context.seqoids)
+		PrelockSequenceForDispatch(lfirst_oid(lc));
+
+	list_free(context.seqoids);
+}
+
 void
 CdbDispatchPlan(struct QueryDesc *queryDesc,
 				ParamExecData *execParams,
@@ -198,6 +270,12 @@ CdbDispatchPlan(struct QueryDesc *queryDesc,
 	 */
 	stmt = queryDesc->plannedstmt;
 	Assert(stmt);
+
+	/*
+	 * Sequences referenced by nextval() must be locked on the QD before the
+	 * statement is dispatched; see prelock_nextval_sequences().
+	 */
+	prelock_nextval_sequences(stmt);
 
 	/*
 	 * Let's evaluate STABLE functions now, so we get consistent values on the

@@ -60,6 +60,7 @@ typedef struct xl_seq_rec
 extern int64 nextval_internal(Oid relid, bool check_permissions, bool called_from_dispatcher);
 extern Datum nextval(PG_FUNCTION_ARGS);
 extern void nextval_qd(Oid relid, int64 *plast, int64 *pcached, int64  *pincrement, bool *poverflow);
+extern void PrelockSequenceForDispatch(Oid relid);
 extern List *sequence_options(Oid relid);
 
 extern ObjectAddress DefineSequence(ParseState *pstate, CreateSeqStmt *seq);
