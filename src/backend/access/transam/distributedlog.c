@@ -478,15 +478,11 @@ DistributedLog_GetDistributedXid(
 
 	Assert(!IS_QUERY_DISPATCHER());
 
-	/*
-	 * If the requested xid is below the truncation horizon, its entry
-	 * has already been trimmed: return "not found" cleanly instead of
-	 * attempting an SLRU read of a removed page.
-	 */
-	oldestXmin = (TransactionId) pg_atomic_read_u32(
-		(pg_atomic_uint32 *) &DistributedLogShared->oldestXmin);
-	if (oldestXmin != InvalidTransactionId &&
-		TransactionIdPrecedes(localXid, oldestXmin))
+	oldestXmin = (TransactionId)pg_atomic_read_u32((pg_atomic_uint32 *)&DistributedLogShared->oldestXmin);
+	if (oldestXmin == InvalidTransactionId)
+		elog(PANIC, "DistributedLog's OldestXmin not initialized yet");
+
+	if (TransactionIdPrecedes(localXid, oldestXmin))
 	{
 		*distribXid = 0;
 		return;
