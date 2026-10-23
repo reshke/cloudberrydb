@@ -1331,9 +1331,22 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	}
 
 	/*
+	 * A transaction-scoped advisory lock cannot be released before the end
+	 * of the transaction, so mark it as held till end of xact.  The flag is
+	 * consumed by the global deadlock detector: a wait on such an advisory
+	 * lock is a solid edge, which otherwise would be wrongly reduced as a
+	 * dotted edge and a real deadlock cycle could be lost.  Session-scoped
+	 * advisory locks are not marked as they can be released any time by
+	 * pg_advisory_unlock().
+	 */
+	if (!sessionLock && locktag->locktag_type == LOCKTAG_ADVISORY)
+		lock->holdTillEndXact = true;
+
+	/*
 	 * Lock state is fully up-to-date now; if we error out after this, no
 	 * special error cleanup is required.
 	 */
+
 	FinishStrongLockAcquire();
 
 	LWLockRelease(partitionLock);
@@ -2425,9 +2438,15 @@ LockRelease(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 		/* must be true */
 		Assert(lock->holdTillEndXact);
 	}
-	else if(locktag->locktag_type == LOCKTAG_RELATION)
+	else if(locktag->locktag_type == LOCKTAG_RELATION ||
+			locktag->locktag_type == LOCKTAG_ADVISORY)
 	{
-		/* might be true or false, no assert */
+		/*
+		 * might be true or false, no assert.
+		 *
+		 * LOCKTAG_ADVISORY is true only when it is held by a transaction
+		 * scoped advisory lock, see LockAcquireExtended().
+		 */
 	}
 	else
 	{
