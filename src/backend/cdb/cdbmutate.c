@@ -926,10 +926,36 @@ replace_shareinput_targetlists_walker(Node *node, PlannerInfo *root, bool fPop)
 }
 
 /*
+ * Does this (sub)plan tree contain a ModifyTable node? Used to detect
+ * producers of data-modifying CTE shares, which must run on a writer gang.
+ */
+static bool
+plan_contains_modifytable(Plan *plan)
+{
+	ListCell   *lc;
+
+	if (plan == NULL)
+		return false;
+	if (IsA(plan, ModifyTable))
+		return true;
+	if (plan_contains_modifytable(plan->lefttree))
+		return true;
+	if (plan_contains_modifytable(plan->righttree))
+		return true;
+	foreach(lc, plan->initPlan)
+	{
+		if (plan_contains_modifytable((Plan *) lfirst(lc)))
+			return true;
+	}
+	return false;
+}
+
+/*
  * First walk on shareinput xslice. Collect information about the producer
  * and consumer slice IDs for each share. It also builds a list of shares
  * that should run in the QD.
  */
+
 static bool
 shareinput_mutator_xslice_1(Node *node, PlannerInfo *root, bool fPop)
 {
@@ -1023,6 +1049,53 @@ shareinput_mutator_xslice_2(Node *node, PlannerInfo *root, bool fPop)
 
 		sisc->producer_slice_id = pershare->producer_slice_id;
 		sisc->nconsumers = bms_num_members(pershare->participant_slices) - 1;
+
+		/*
+		 * The producer (the one ShareInputScan instance that still has
+		 * the ModifyTable subplan attached) and all consumer
+		 * instances of a data-modifying CTE share must live in the
+		 * same slice: the single writer gang can only be located in
+		 * one slice, and shares that span slice trees (e.g. one
+		 * reference from a scalar subquery InitPlan and one from the
+		 * main query) would deadlock in the ShareInputScan completion
+		 * handshake, because InitPlan slice trees are executed one at
+		 * a time. Reject such plans with a clean error instead of
+		 * failing at execution time with an internal error, or
+		 * hanging.
+		 */
+		if (sisc->scan.plan.lefttree != NULL &&
+			plan_contains_modifytable(sisc->scan.plan.lefttree))
+		{
+			PlanSlice *producerSlice = &ctxt->slices[motId];
+
+			if (bms_num_members(pershare->participant_slices) > 1)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot distribute a data-modifying CTE over multiple slices"),
+						 errhint("Reference the data-modifying CTE from a single query level, or materialize/restrict it so that all its references are in the same slice.")));
+
+			/*
+			 * The plan-tree rewrite in apply_shareinput_dag_to_tree()
+			 * may have placed the ModifyTable in a different slice
+			 * than the one that create_modifytable_plan() marked, so
+			 * make sure the slice hosting the producer is assigned
+			 * to the writer gang. The share has been verified above
+			 * to span a single slice.
+			 */
+			switch (producerSlice->gangType)
+			{
+				case GANGTYPE_PRIMARY_READER:
+				case GANGTYPE_SINGLETON_READER:
+					producerSlice->gangType = GANGTYPE_PRIMARY_WRITER;
+					break;
+				case GANGTYPE_UNALLOCATED:
+				case GANGTYPE_ENTRYDB_READER:
+					/* executed on the QD; leave as is */
+					break;
+				case GANGTYPE_PRIMARY_WRITER:
+					break;
+			}
+		}
 
 		/*
 		 * If this share needs to run in the QD, mark the slice accordingly.

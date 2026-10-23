@@ -3475,18 +3475,36 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	 * so far we don't support it.
 	 */
 
-	switch (cte->ctematerialized)
+	/*
+	 * A data-modifying CTE that is referenced more than once must always be
+	 * shared. Upstream PostgreSQL executes a data-modifying CTE exactly once
+	 * per statement, and every reference reads the rows produced by that
+	 * single execution; in CBDB the corresponding mechanism is to share the
+	 * subplan via ShareInputScan, so that only one copy of the ModifyTable
+	 * plan ends up in the final plan. Executing one copy per reference would
+	 * repeat the modifications (or trip over the single-writer-gang
+	 * restriction with an internal "Reader Gang execute ModifyTable" error,
+	 * e.g. for FROM-clause self-joins).
+	 */
+	if ((((Query *) cte->ctequery)->commandType != CMD_SELECT) &&
+		(cte->cterefcount > 1 ||
+		 cte->ctematerialized == CTEMaterializeAlways))
+		is_shared = true;
+	else
 	{
-		case CTEMaterializeNever:
-			is_shared = false;
-			break;
-		case CTEMaterializeAlways:
-			is_shared = true;
-			break;
-		default:
-			/* if plan sharing is enabled and contains volatile functions in the CTE query, also generate a shared scan plan */
-			is_shared =  root->config->gp_cte_sharing && (cte->cterefcount > 1 || contain_volatile_function);
+		switch (cte->ctematerialized)
+		{
+			case CTEMaterializeNever:
+				is_shared = false;
+				break;
+			case CTEMaterializeAlways:
+				is_shared = true;
+				break;
+			default:
+				/* if plan sharing is enabled and contains volatile functions in the CTE query, also generate a shared scan plan */
+				is_shared =  root->config->gp_cte_sharing && (cte->cterefcount > 1 || contain_volatile_function);
 
+		}
 	}
 
 	/*

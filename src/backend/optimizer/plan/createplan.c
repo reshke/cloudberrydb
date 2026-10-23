@@ -5039,6 +5039,34 @@ create_ctescan_plan(PlannerInfo *root, Path *best_path,
 		}
 		/* Wrap the common Plan tree in a ShareInputScan node */
 		subplan = share_prepared_plan(cteroot, cteplaninfo->shared_plan);
+
+		/*
+		 * If the shared plan is a ModifyTable (a data-modifying CTE), its
+		 * targetlist is still empty at this point: setrefs.c only fills it
+		 * in afterwards, for EXPLAIN. make_shareinputscan() copied that empty
+		 * targetlist into the ShareInputScan, but the consumers of the share
+		 * need to see the CTE's output (RETURNING) columns. Copy the CTE's
+		 * RETURNING target list into the ShareInputScan. Only the resno and
+		 * type information matter: setrefs.c will later replace the
+		 * expressions with dummy references.
+		 */
+		if (subplan->targetlist == NIL && cteplaninfo->subroot != NULL)
+		{
+			List	   *cte_tlist = NIL;
+
+			if (cteplaninfo->shared_plan != NULL &&
+				IsA(cteplaninfo->shared_plan, ModifyTable))
+			{
+				ModifyTable *mt = (ModifyTable *) cteplaninfo->shared_plan;
+
+				if (mt->returningLists != NIL)
+					cte_tlist = linitial(mt->returningLists);
+				if (cte_tlist == NIL)
+					cte_tlist = cteplaninfo->subroot->processed_tlist;
+			}
+			if (cte_tlist != NIL)
+				subplan->targetlist = copyObject(cte_tlist);
+		}
 	}
 
 	scan_plan = (Plan *) make_subqueryscan(tlist,
