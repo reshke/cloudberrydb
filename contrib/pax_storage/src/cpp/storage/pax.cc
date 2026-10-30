@@ -451,7 +451,18 @@ bool TableReader::GetTuple(TupleTableSlot *slot, ScanDirection direction,
   }
 
   options.filter = reader_options_.filter;
-  options.reused_buffer = reader_options_.reused_buffer;
+  /*
+   * A single buffer shared across all micro-partition readers of one scan
+   * lets the next micro-partition overwrite storage that previously
+   * returned (virtual-tuple) datums may still point into. Consumers
+   * holding such a datum across a micro-partition switch can observe
+   * transiently wrong column values (single-row deviations that
+   * disappear on re-read; reproduced deterministically under
+   * concurrent DDL churn). Use a dedicated buffer per micro-partition
+   * reader instead.
+   */
+  options.reused_buffer =
+      std::make_shared<DataBuffer<char>>(pax_scan_reuse_buffer_size);
 
   // load visibility map
   // TODO(jiaqizho): PAX should not do read/pread in table layer
@@ -498,7 +509,18 @@ void TableReader::OpenFile() {
   current_block_number_ = micro_partition_id_;
 
   options.filter = reader_options_.filter;
-  options.reused_buffer = reader_options_.reused_buffer;
+  /*
+   * A single buffer shared across all micro-partition readers of one scan
+   * lets the next micro-partition overwrite storage that previously
+   * returned (virtual-tuple) datums may still point into. Consumers
+   * holding such a datum across a micro-partition switch can observe
+   * transiently wrong column values (single-row deviations that
+   * disappear on re-read; reproduced deterministically under
+   * concurrent DDL churn). Use a dedicated buffer per micro-partition
+   * reader instead.
+   */
+  options.reused_buffer =
+      std::make_shared<DataBuffer<char>>(pax_scan_reuse_buffer_size);
 
   // load visibility map
   std::string visibility_bitmap_file = it.GetVisibilityBitmapFile();
