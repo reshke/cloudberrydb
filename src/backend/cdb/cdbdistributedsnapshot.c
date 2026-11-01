@@ -156,7 +156,17 @@ DistributedSnapshotWithLocalMapping_CommittedTest(
 
 	for (i = 0; i < ds->count; i++)
 	{
-		if (distribXid == ds->inProgressXidArray[i])
+		DistributedTransactionId curInProgressXid;
+
+		/*
+		 * NB: the array can point inside the serialized distributed snapshot
+		 * buffer received over the interconnect, so elements may not be
+		 * 8-byte aligned; read via a local to avoid a misaligned load.
+		 */
+		memcpy(&curInProgressXid, &ds->inProgressXidArray[i],
+			   sizeof(curInProgressXid));
+
+		if (distribXid == curInProgressXid)
 		{
 			/*
 			 * Save the relationship to the local xid so we may avoid checking
@@ -191,7 +201,7 @@ DistributedSnapshotWithLocalMapping_CommittedTest(
 		 * CreateDistributedSnapshot(). So, can fail fast once known are
 		 * lower than rest of them.
 		 */
-		if (distribXid < ds->inProgressXidArray[i])
+		if (distribXid < curInProgressXid)
 			break;
 	}
 
