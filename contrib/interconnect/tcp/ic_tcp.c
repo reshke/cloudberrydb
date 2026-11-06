@@ -2690,7 +2690,10 @@ RecvTupleChunkTCP(MotionConn * conn, ChunkTransportState * transportStates)
 							   conn->msgSize, bytesProcessed, TUPLE_CHUNK_HEADER_SIZE)));
 		}
 
-		tcSize = TUPLE_CHUNK_HEADER_SIZE + (*(uint16 *) (conn->msgPos + bytesProcessed));
+		uint16		chunkLength;
+
+		memcpy(&chunkLength, conn->msgPos + bytesProcessed, sizeof(chunkLength));
+		tcSize = TUPLE_CHUNK_HEADER_SIZE + chunkLength;
 
 		/* sanity check */
 		if (tcSize > Gp_max_packet_size)
