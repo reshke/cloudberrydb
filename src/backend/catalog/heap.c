@@ -676,6 +676,10 @@ CheckAttributeNamesTypes(TupleDesc tupdesc, char relkind,
  * flags can also control the phrasing of the error messages.  If
  * CHKATYPE_IS_PARTKEY is specified, "attname" should be a partition key
  * column number as text, not a real column name.
+ *
+ * attname can be NULL when checking an expression that has no column name,
+ * such as an extended statistics expression. This can't be combined with
+ * CHKATYPE_IS_PARTKEY.
  * --------------------------------
  */
 void
@@ -687,10 +691,12 @@ CheckAttributeType(const char *attname,
 	char		att_typtype = get_typtype(atttypid);
 	Oid			att_typelem;
 
+	Assert(attname != NULL || (flags & CHKATYPE_IS_PARTKEY) == 0);
+
 	if (Gp_role == GP_ROLE_EXECUTE)
 	{
 		/*
-		 * In executor nodes, don't bother checking, as the dispatcher should've
+		 * In executor nodes, dont bother checking, as the dispatcher shouldve
 		 * checked this already.
 		 */
 		return;
@@ -721,11 +727,16 @@ CheckAttributeType(const char *attname,
 				/* translator: first %s is an integer not a name */
 						 errmsg("partition key column %s has pseudo-type %s",
 								attname, format_type_be(atttypid))));
-			else
+			else if (attname)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 						 errmsg("column \"%s\" has pseudo-type %s",
 								attname, format_type_be(atttypid))));
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						 errmsg("expression has pseudo-type %s",
+								format_type_be(atttypid))));
 		}
 	}
 	else if (att_typtype == TYPTYPE_DOMAIN)
@@ -823,11 +834,17 @@ CheckAttributeType(const char *attname,
 					 errmsg("no collation was derived for partition key column %s with collatable type %s",
 							attname, format_type_be(atttypid)),
 					 errhint("Use the COLLATE clause to set the collation explicitly.")));
-		else
+		else if (attname)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 					 errmsg("no collation was derived for column \"%s\" with collatable type %s",
 							attname, format_type_be(atttypid)),
+					 errhint("Use the COLLATE clause to set the collation explicitly.")));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("no collation was derived for expression with collatable type %s",
+							format_type_be(atttypid)),
 					 errhint("Use the COLLATE clause to set the collation explicitly.")));
 	}
 }
