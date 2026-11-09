@@ -163,4 +163,5 @@ test: ao-insert-eof create_index_hot udf-insert-deadlock heap-repeatable-read ao
 test: vacuum-ao-concurrent-drop
 
 test: ddl-dependency-locking
+test: type-ddl-locking
 test: tablespace-dependency-locking
