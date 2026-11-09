@@ -14,8 +14,19 @@
 #ifndef BINARY_UPGRADE_H
 #define BINARY_UPGRADE_H
 
+#include "access/xlogdefs.h"
+
+/* Per-attribute versions carried across a binary upgrade. */
+typedef struct BinaryUpgradeAttributeVersions
+{
+    int natts;
+    XLogRecPtr versions[FLEXIBLE_ARRAY_MEMBER];
+} BinaryUpgradeAttributeVersions;
+
+extern PGDLLIMPORT BinaryUpgradeAttributeVersions *binary_upgrade_next_attribute_versions;
+
 /*
- * These are not used in GPDB. We use the generic OID pre-assignment
+ * These OID overrides are not used in GPDB. We use the generic OID pre-assignment
  * machinery instead.
  */
 #if 0
@@ -27,6 +38,8 @@ extern PGDLLIMPORT Oid binary_upgrade_next_mrng_array_pg_type_oid;
 extern PGDLLIMPORT Oid binary_upgrade_next_heap_pg_class_oid;
 extern PGDLLIMPORT Oid binary_upgrade_next_index_pg_class_oid;
 extern PGDLLIMPORT Oid binary_upgrade_next_toast_pg_class_oid;
+
+extern PGDLLIMPORT BinaryUpgradeAttributeVersions *binary_upgrade_next_attribute_versions;
 
 extern PGDLLIMPORT Oid binary_upgrade_next_pg_enum_oid;
 extern PGDLLIMPORT Oid binary_upgrade_next_pg_authid_oid;
