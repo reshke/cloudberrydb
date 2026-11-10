@@ -15,6 +15,7 @@
 
 #include "utils/relcache.h"
 #include "access/htup.h"
+#include "access/xlogdefs.h"
 
 /*
  * OID to assign to the next auxiliary pg_authid role created through
@@ -25,6 +26,8 @@ extern PGDLLIMPORT Oid next_aux_pg_authid_oid;
 
 /* Functions used in master */
 extern List *GetAssignedOidsForDispatch(void);
+extern XLogRecPtr GetNewOrPreassignedAttributeVersion(Oid relationOid,
+													AttrNumber attnum);
 
 /* Functions used in QE nodes */
 extern void AddPreassignedOids(List *l);

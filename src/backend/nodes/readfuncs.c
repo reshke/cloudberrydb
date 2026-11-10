@@ -2928,6 +2928,21 @@ _readPartitionRangeDatum(void)
 
 #include "readfuncs_common.c"
 #ifndef COMPILING_BINARY_FUNCS
+static OidAssignment *
+_readOidAssignment(void)
+{
+	READ_LOCALS(OidAssignment);
+
+	READ_OID_FIELD(catalog);
+	READ_STRING_FIELD(objname);
+	READ_OID_FIELD(namespaceOid);
+	READ_OID_FIELD(keyOid1);
+	READ_OID_FIELD(keyOid2);
+	READ_OID_FIELD(oid);
+	READ_UINT64_FIELD(attributeVersion);
+	READ_DONE();
+}
+
 /*
  * parseNodeString
  *
@@ -3231,6 +3246,8 @@ parseNodeString(void)
 		return_value = _readAlternativeSubPlan();
 	else if (MATCH("RESTRICTINFO", 12))
 		return_value = _readRestrictInfo();
+	else if (MATCH("OIDASSIGNMENT", 13))
+		return_value = _readOidAssignment();
 	else if (MATCH("EXTENSIBLENODE", 14))
 		return_value = _readExtensibleNode();
 	else if (MATCH("PARTITIONBOUNDSPEC", 18))

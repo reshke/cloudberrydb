@@ -397,3 +397,6 @@ test: dboptions
 test: gp_log_mem_dispatch
 
 # end of tests
+
+# Attribute versions must agree between coordinator and segments.
+test: mpp_attribute_version
