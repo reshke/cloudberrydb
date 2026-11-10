@@ -29,12 +29,15 @@ CREATE FUNCTION cl_stab(stmt text, late bool) RETURNS int
 LANGUAGE sql STABLE AS
 $$ SELECT cl_run(stmt, late) $$;
 
--- SPI, executor startup.
+-- SPI, execution. A local query keeps the function in the coordinator
+-- backend owning cursor c; distributed pruning can run on another backend.
 BEGIN;
 DO $$
 DECLARE r refcursor := 'c';
+  x int;
 BEGIN
-  OPEN r FOR SELECT * FROM cl_p WHERE a < cl_stab('CLOSE c', true) + 5;
+  OPEN r FOR SELECT cl_stab('CLOSE c', true);
+  FETCH r INTO x;
 END $$;
 ROLLBACK;
 BEGIN;
@@ -42,7 +45,7 @@ DO $$
 DECLARE r refcursor := 'c';
   x int;
 BEGIN
-  OPEN r FOR SELECT * FROM cl_p WHERE a < cl_stab('CLOSE ALL', true) + 5;
+  OPEN r FOR SELECT cl_stab('CLOSE ALL', true) - 1;
   FETCH r INTO x;
   RAISE NOTICE 'fetched %', x;
 END $$;
@@ -53,7 +56,7 @@ BEGIN;
 DO $$
 DECLARE r refcursor := 'c';
 BEGIN
-  OPEN r FOR SELECT * FROM cl_p WHERE a < cl_stab('CLOSE c', false) + 5;
+  OPEN r FOR SELECT * FROM cl_p WHERE a < cl_stab('CLOSE c', false) + 5 ORDER BY a;
 END $$;
 ROLLBACK;
 BEGIN;
@@ -61,7 +64,7 @@ DO $$
 DECLARE r refcursor := 'c';
   x int;
 BEGIN
-  OPEN r FOR SELECT * FROM cl_p WHERE a < cl_stab('CLOSE ALL', false) + 5;
+  OPEN r FOR SELECT * FROM cl_p WHERE a < cl_stab('CLOSE ALL', false) + 5 ORDER BY a;
   FETCH r INTO x;
   RAISE NOTICE 'fetched %', x;
 END $$;
