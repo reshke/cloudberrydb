@@ -1235,7 +1235,8 @@ array_agg_array_combine(PG_FUNCTION_ARGS)
 	else if (state2->nitems > 0)
 	{
 		MemoryContext oldContext;
-		int			reqsize = state1->nbytes + state2->nbytes;
+		int			reqsize;
+		int			newnitems;
 		int			i;
 
 		/*
@@ -1258,6 +1259,18 @@ array_agg_array_combine(PG_FUNCTION_ARGS)
 						 errmsg("cannot accumulate arrays of different dimensionality")));
 		}
 
+		/* Types should match already. */
+		Assert(state1->array_type == state2->array_type);
+		Assert(state1->element_type == state2->element_type);
+
+		/* Calculate new sizes, guarding against overflow. */
+		if (pg_add_s32_overflow(state1->nbytes, state2->nbytes, &reqsize) ||
+			pg_add_s32_overflow(state1->nitems, state2->nitems, &newnitems) ||
+			!AllocSizeIsValid(reqsize))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("array size exceeds the maximum allowed (%zu)",
+							MaxArraySize)));
 
 		oldContext = MemoryContextSwitchTo(state1->mcontext);
 
@@ -1269,24 +1282,40 @@ array_agg_array_combine(PG_FUNCTION_ARGS)
 		{
 			/* use a power of 2 size rather than allocating just reqsize */
 			while (state1->abytes < reqsize)
-				state1->abytes *= 2;
+			{
+				int			newabytes;
+
+				if (pg_mul_s32_overflow(state1->abytes, 2, &newabytes) ||
+					!AllocSizeIsValid(newabytes))
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("array size exceeds the maximum allowed (%zu)",
+									MaxArraySize)));
+				state1->abytes = newabytes;
+			}
 
 			state1->data = (char *) repalloc(state1->data, state1->abytes);
 		}
 
 		if (state2->nullbitmap)
 		{
-			int			newnitems = state1->nitems + state2->nitems;
-
 			if (state1->nullbitmap == NULL)
 			{
+				int			newaitems = 256;
+
 				/*
 				 * First input with nulls; we must retrospectively handle any
 				 * previous inputs by marking all their items non-null.
 				 */
-				state1->aitems = 256;
-				while (state1->aitems <= newnitems)
-					state1->aitems *= 2;
+				while (newaitems <= newnitems)
+				{
+					if (pg_mul_s32_overflow(newaitems, 2, &newaitems))
+						ereport(ERROR,
+								(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+								 errmsg("array size exceeds the maximum allowed (%zu)",
+										MaxArraySize)));
+				}
+				state1->aitems = newaitems;
 				state1->nullbitmap = (bits8 *) palloc((state1->aitems + 7) / 8);
 				array_bitmap_copy(state1->nullbitmap, 0,
 								  NULL, 0,
@@ -1294,10 +1323,26 @@ array_agg_array_combine(PG_FUNCTION_ARGS)
 			}
 			else if (newnitems > state1->aitems)
 			{
-				int			newaitems = state1->aitems + state2->aitems;
+				int			newaitems;
+
+				if (pg_add_s32_overflow(state1->aitems, state2->aitems,
+										&newaitems))
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("array size exceeds the maximum allowed (%zu)",
+									MaxArraySize)));
 
 				while (state1->aitems < newaitems)
-					state1->aitems *= 2;
+				{
+					int			newcapacity;
+
+					if (pg_mul_s32_overflow(state1->aitems, 2, &newcapacity))
+						ereport(ERROR,
+								(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+								 errmsg("array size exceeds the maximum allowed (%zu)",
+										MaxArraySize)));
+					state1->aitems = newcapacity;
+				}
 
 				state1->nullbitmap = (bits8 *)
 					repalloc(state1->nullbitmap, (state1->aitems + 7) / 8);
@@ -1308,14 +1353,11 @@ array_agg_array_combine(PG_FUNCTION_ARGS)
 		}
 
 		memcpy(state1->data + state1->nbytes, state2->data, state2->nbytes);
-		state1->nbytes += state2->nbytes;
-		state1->nitems += state2->nitems;
+		state1->nbytes = reqsize;
+		state1->nitems = newnitems;
 
 		state1->dims[0] += state2->dims[0];
 		/* remaing dims already match, per test above */
-
-		Assert(state1->array_type == state2->array_type);
-		Assert(state1->element_type = state2->element_type);
 
 		MemoryContextSwitchTo(oldContext);
 	}
