@@ -62,3 +62,10 @@ FROM (
 ) differences;
 RESET search_path;
 DROP SCHEMA mpp_attribute_version CASCADE;
+
+-- The internal bitmap heap has no rowtype, even though it is a relation.
+CREATE TABLE av_bitmap_ao (a int) WITH (appendonly=true) DISTRIBUTED BY (a);
+INSERT INTO av_bitmap_ao VALUES (1), (2);
+CREATE INDEX av_bitmap_ao_idx ON av_bitmap_ao USING bitmap (a);
+SELECT count(*) FROM av_bitmap_ao WHERE a = 1;
+DROP TABLE av_bitmap_ao;

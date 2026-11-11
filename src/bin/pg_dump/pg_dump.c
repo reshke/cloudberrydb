@@ -17666,7 +17666,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 												tbinfo->dobj.catId.oid);
 
 		/* only relations with a row type have versioned attributes */
-		if (RELKIND_HAS_ROWTYPE(tbinfo->relkind))
+		if (OidIsValid(tbinfo->reltype))
 			binary_upgrade_set_next_attribute_versions(q, tbinfo->numatts,
 													   tbinfo->attversion);
 	}

@@ -31,6 +31,7 @@ extern bool IsSystemRelation(Relation relation);
 extern bool IsToastRelation(Relation relation);
 extern bool IsCatalogRelation(Relation relation);
 extern bool HasVersionedAttributes(Relation relation);
+extern bool RelationKindHasRowType(char relkind, Oid relnamespace);
 
 extern bool IsSystemClass(Oid relid, Form_pg_class reltuple);
 extern bool IsToastClass(Form_pg_class reltuple);

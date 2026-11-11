@@ -246,6 +246,20 @@ IsCatalogRelationOid(Oid relid)
 }
 
 /*
+ * Some internal relations have a table-like relkind but no rowtype.
+ * Keep this consistent with heap_create_with_catalog().
+ */
+bool
+RelationKindHasRowType(char relkind, Oid relnamespace)
+{
+	return RELKIND_HAS_ROWTYPE(relkind) &&
+		relnamespace != PG_BITMAPINDEX_NAMESPACE &&
+		!(relnamespace == PG_EXTAUX_NAMESPACE &&
+		  (relkind == RELKIND_RELATION || relkind == RELKIND_VIEW ||
+		   relkind == RELKIND_MATVIEW));
+}
+
+/*
  * HasVersionedAttributes
  *		Return whether the relation has versioned attributes.
  */
@@ -260,13 +274,10 @@ HasVersionedAttributes(Relation relation)
 	 * deforming composite datums incompatible with the current type
 	 * definition.
 	 */
-	if (!RELKIND_HAS_ROWTYPE(relation->rd_rel->relkind))
-	{
-		Assert(relation->rd_rel->reltype == InvalidOid);
+	if (!OidIsValid(relation->rd_rel->reltype))
 		return false;
-	}
 
-	Assert(relation->rd_rel->reltype != InvalidOid);
+	Assert(RELKIND_HAS_ROWTYPE(relation->rd_rel->relkind));
 
 	/*
 	 * Bootstrapped relations are not versioned, for two reasons:

@@ -1578,7 +1578,8 @@ InsertPgClassTuple(Relation pg_class_desc,
 	 * Sanity-check RELKIND_HAS_ROWTYPE, quite likely to detect any
 	 * mismatches.
 	 */
-	Assert(RELKIND_HAS_ROWTYPE(rd_rel->relkind) == (rd_rel->reltype != InvalidOid));
+	Assert(RelationKindHasRowType(rd_rel->relkind, rd_rel->relnamespace) ==
+		   OidIsValid(rd_rel->reltype));
 
 	/* This is a tad tedious, but way cleaner than what we used to do... */
 	memset(values, 0, sizeof(values));

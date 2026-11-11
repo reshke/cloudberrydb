@@ -235,6 +235,7 @@ DECLARE_INDEX(pg_class_tblspc_relfilenode_index, 3455, on pg_class using btree(r
 	 (relkind) == RELKIND_MATVIEW || \
 	 (relkind) == RELKIND_COMPOSITE_TYPE || \
 	 (relkind) == RELKIND_FOREIGN_TABLE || \
+	 (relkind) == RELKIND_DIRECTORY_TABLE || \
 	 (relkind) == RELKIND_PARTITIONED_TABLE)
 
 
