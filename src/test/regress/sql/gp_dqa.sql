@@ -684,3 +684,54 @@ SELECT count(DISTINCT a), count(DISTINCT b ORDER BY b) FROM dqa_hashability;
 DROP TABLE dqa_hashability;
 DROP TYPE dqa_cash_range;
 COMMIT;
+
+-- Binary relabels with the same DISTINCT equality can share one DQA path.
+BEGIN;
+SET LOCAL optimizer = off;
+SET LOCAL gp_enable_multiphase_agg = on;
+SET LOCAL gp_enable_agg_distinct = off;
+SET LOCAL gp_eager_two_phase_agg = on;
+SET LOCAL enable_groupagg = on;
+CREATE TABLE dqa_relabel (a varchar) DISTRIBUTED BY (a);
+INSERT INTO dqa_relabel VALUES ('a'), ('a '), ('b'), ('b'), (NULL);
+ANALYZE dqa_relabel;
+
+-- No TupleSplit or redistribution is needed for these collocated arguments.
+EXPLAIN (COSTS OFF)
+SELECT count(DISTINCT a::text), count(DISTINCT a), count(*) FROM dqa_relabel;
+SELECT count(DISTINCT a::text), count(DISTINCT a), count(*) FROM dqa_relabel;
+SELECT count(DISTINCT a), count(DISTINCT a::text), count(*) FROM dqa_relabel;
+
+-- Binary compatibility does not imply the same DISTINCT equality: bpchar
+-- ignores trailing spaces, unlike text. Keep separate DISTINCT argument sets.
+EXPLAIN (COSTS OFF)
+SELECT count(DISTINCT a::text), count(DISTINCT a::bpchar), count(*)
+FROM dqa_relabel;
+SELECT count(DISTINCT a::text), count(DISTINCT a::bpchar), count(*)
+FROM dqa_relabel;
+
+-- Value-changing casts and different collations must not be stripped.
+SELECT count(DISTINCT a::text), count(DISTINCT a::varchar(1)), count(*)
+FROM dqa_relabel;
+SELECT count(DISTINCT a::text), count(DISTINCT a COLLATE "C"), count(*)
+FROM dqa_relabel;
+
+-- Keep the relaxation separate from FILTER planning.
+SELECT count(DISTINCT a::text), count(DISTINCT a) FILTER (WHERE a = 'b'),
+       count(*) FROM dqa_relabel;
+
+-- Both argument orders must also work when hashing removes duplicates.
+SET LOCAL gp_enable_agg_distinct = on;
+SET LOCAL gp_eager_distinct_dedup = on;
+SELECT count(DISTINCT a::text), count(DISTINCT a) FROM dqa_relabel;
+SELECT count(DISTINCT a), count(DISTINCT a::text) FROM dqa_relabel;
+SELECT count(DISTINCT lower(a)::varchar), count(DISTINCT lower(a))
+FROM dqa_relabel;
+SELECT count(DISTINCT lower(a)), count(DISTINCT lower(a)::varchar)
+FROM dqa_relabel;
+
+ALTER TABLE dqa_relabel SET DISTRIBUTED RANDOMLY;
+SELECT count(DISTINCT a::text), count(DISTINCT a) FROM dqa_relabel;
+SELECT count(DISTINCT a), count(DISTINCT a::text) FROM dqa_relabel;
+DROP TABLE dqa_relabel;
+COMMIT;

@@ -2228,11 +2228,55 @@ choose_grouping_locus(PlannerInfo *root, Path *path,
 	return locus;
 }
 
+/*
+ * DISTINCT arguments that differ only by binary relabels can use the same
+ * deduplication.  The relabels must preserve DISTINCT equality and collation;
+ * binary compatibility alone says nothing about equality semantics.
+ */
+static bool
+equal_dqa_args(Aggref *left, Aggref *right)
+{
+	ListCell   *lc1;
+	ListCell   *lc2;
+
+	if (equal(left->args, right->args))
+		return true;
+
+	/* Keep the relaxation to unfiltered, nonvolatile arguments. */
+	if (list_length(left->args) != list_length(right->args) ||
+		!equal(left->aggdistinct, right->aggdistinct) ||
+		left->aggfilter || right->aggfilter ||
+		contain_volatile_functions((Node *) left->args) ||
+		contain_volatile_functions((Node *) right->args))
+		return false;
+
+	forboth(lc1, left->args, lc2, right->args)
+	{
+		TargetEntry left_tle = *lfirst_node(TargetEntry, lc1);
+		TargetEntry right_tle = *lfirst_node(TargetEntry, lc2);
+
+		if (exprCollation((Node *) left_tle.expr) !=
+			exprCollation((Node *) right_tle.expr))
+			return false;
+
+		while (IsA(left_tle.expr, RelabelType))
+			left_tle.expr = ((RelabelType *) left_tle.expr)->arg;
+		while (IsA(right_tle.expr, RelabelType))
+			right_tle.expr = ((RelabelType *) right_tle.expr)->arg;
+
+		/* Also preserve all the TargetEntry metadata. */
+		if (!equal(&left_tle, &right_tle))
+			return false;
+	}
+
+	return true;
+}
+
 static DQAType
 recognize_dqa_type(cdb_agg_planning_context *ctx)
 {
 	ListCell    *lc, *lcc;
-	List        *dqaArgs = NIL;
+	Aggref	   *first_dqa = NULL;
 	DQAType		type = INVALID_DQA;
 
 	ctx->type = INVALID_DQA;
@@ -2261,13 +2305,13 @@ recognize_dqa_type(cdb_agg_planning_context *ctx)
 		}
 
 		/* get the first dqa arguments */
-		if (dqaArgs == NIL)
+		if (first_dqa == NULL)
 		{
-			dqaArgs = aggref->args;
+			first_dqa = aggref;
 			type = SINGLE_DQA;
 		}
 		/* if there is another dqa with different args, it's MULTI_DQAS */
-		else if (!equal(dqaArgs, aggref->args))
+		else if (!equal_dqa_args(first_dqa, aggref))
 			type = MULTI_DQAS;
 	}
 
