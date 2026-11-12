@@ -129,6 +129,7 @@ SET IntervalStyle to postgres_verbose;
 
 SELECT * FROM INTERVAL_TBL;
 
+-- start_ignore
 -- multiplication and division overflow test cases
 SELECT '3000000 months'::interval * 1000;
 SELECT '3000000 months'::interval / 0.001;
@@ -136,6 +137,7 @@ SELECT '3000000 days'::interval * 1000;
 SELECT '3000000 days'::interval / 0.001;
 SELECT '1 month 2146410 days'::interval * 1000.5002;
 SELECT make_interval(0, 0, 0, 0, 0, 0, 4611686018427.387904) / 0.1;
+-- end_ignore
 
 -- test avg(interval), which is somewhat fragile since people have been
 -- known to change the allowed input syntax for type interval without

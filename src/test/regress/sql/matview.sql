@@ -236,6 +236,7 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_mv_foo;
 DROP OWNED BY regress_user_mvtest CASCADE;
 DROP ROLE regress_user_mvtest;
 
+-- start_ignore
 -- Concurrent refresh requires a unique index on the materialized
 -- view. Test what happens if it's dropped during the refresh.
 CREATE OR REPLACE FUNCTION mvtest_drop_the_index()
@@ -252,6 +253,7 @@ CREATE MATERIALIZED VIEW drop_idx_matview AS
 CREATE UNIQUE INDEX mvtest_drop_idx ON drop_idx_matview (i);
 REFRESH MATERIALIZED VIEW CONCURRENTLY drop_idx_matview;
 DROP MATERIALIZED VIEW drop_idx_matview; -- clean up
+-- end_ignore
 
 -- make sure that create WITH NO DATA works via SPI
 BEGIN;

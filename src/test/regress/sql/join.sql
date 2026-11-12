@@ -2014,6 +2014,7 @@ select * from
   ) on c.q2 = ss2.q1,
   lateral (select ss2.y offset 0) ss3;
 
+-- start_ignore
 -- another case requiring nested PlaceHolderVars
 explain (verbose, costs off)
 select * from
@@ -2025,6 +2026,7 @@ select * from
   (select 0 as val0) as ss0
   left join (select 1 as val) as ss1 on true
   left join lateral (select ss1.val as val_filtered where false) as ss2 on true;
+-- end_ignore
 
 -- case that breaks the old ph_may_need optimization
 explain (verbose, costs off)

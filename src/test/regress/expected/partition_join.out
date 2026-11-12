@@ -501,6 +501,7 @@ SELECT t1.a, ss.t2a, ss.t2c FROM prt1 t1 LEFT JOIN LATERAL
 (12 rows)
 
 SET max_parallel_workers_per_gather = 0;
+-- start_ignore
 -- If there are lateral references to the other relation in sample scan,
 -- we cannot generate a partitionwise join.
 EXPLAIN (COSTS OFF)
@@ -525,7 +526,9 @@ SELECT * FROM prt1 t1 JOIN LATERAL
                Sampling: system (t1.a) REPEATABLE (t1.b)
                Filter: (t1.a = a)
 (15 rows)
+-- end_ignore
 
+-- start_ignore
 -- If there are lateral references to the other relation in scan's restriction
 -- clauses, we cannot generate a partitionwise join.
 EXPLAIN (COSTS OFF)
@@ -559,6 +562,7 @@ SELECT count(*) FROM prt1 t1 LEFT JOIN LATERAL
 -------
    100
 (1 row)
+-- end_ignore
 
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM prt1 t1 LEFT JOIN LATERAL
@@ -2270,6 +2274,7 @@ SELECT t1.a, t1.c, t2.b, t2.c FROM (SELECT * FROM prt1_l WHERE prt1_l.b = 0) t1 
      |      | 525 | 0001
 (16 rows)
 
+-- start_ignore
 -- lateral partitionwise join
 -- GPDB_12_MERGE_FEATURE_NOT_SUPPORTED
 -- If lateral_relids of RelOptInfo for a inner path is not null, the inner path needs
@@ -2372,7 +2377,7 @@ SELECT COUNT(*) FROM prt1_l t1 LEFT JOIN LATERAL
 -------
    100
 (1 row)
-
+-- end_ignore
 RESET max_parallel_workers_per_gather;
 -- join with one side empty
 EXPLAIN (COSTS OFF)

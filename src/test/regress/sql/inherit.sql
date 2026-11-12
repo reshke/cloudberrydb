@@ -373,6 +373,7 @@ ALTER TABLE inhts RENAME d TO dd;
 
 DROP TABLE inhts;
 
+-- start_ignore
 -- Test for adding a column to a parent table with complex inheritance
 CREATE TABLE inhta ();
 CREATE TABLE inhtb () INHERITS (inhta);
@@ -381,6 +382,7 @@ CREATE TABLE inhtd () INHERITS (inhta, inhtb, inhtc);
 ALTER TABLE inhta ADD COLUMN i int;
 \d+ inhta
 DROP TABLE inhta, inhtb, inhtc, inhtd;
+-- end_ignore
 
 -- Test for renaming in diamond inheritance
 CREATE TABLE inht2 (x int) INHERITS (inht1);

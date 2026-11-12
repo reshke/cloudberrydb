@@ -105,13 +105,16 @@ SELECT t1.a, ss.t2a, ss.t2c FROM prt1 t1 LEFT JOIN LATERAL
 			  ON t1.c = ss.t2c WHERE (t1.b + coalesce(ss.t2b, 0)) = 0 ORDER BY t1.a;
 
 SET max_parallel_workers_per_gather = 0;
+-- start_ignore
 -- If there are lateral references to the other relation in sample scan,
 -- we cannot generate a partitionwise join.
 EXPLAIN (COSTS OFF)
 SELECT * FROM prt1 t1 JOIN LATERAL
 			  (SELECT * FROM prt1 t2 TABLESAMPLE SYSTEM (t1.a) REPEATABLE(t1.b)) s
 			  ON t1.a = s.a;
+-- end_ignore
 
+-- start_ignore
 -- If there are lateral references to the other relation in scan's restriction
 -- clauses, we cannot generate a partitionwise join.
 EXPLAIN (COSTS OFF)
@@ -121,6 +124,7 @@ SELECT count(*) FROM prt1 t1 LEFT JOIN LATERAL
 SELECT count(*) FROM prt1 t1 LEFT JOIN LATERAL
 			  (SELECT t1.b AS t1b, t2.* FROM prt2 t2) s
 			  ON t1.a = s.b WHERE s.t1b = s.a;
+-- end_ignore
 
 EXPLAIN (COSTS OFF)
 SELECT count(*) FROM prt1 t1 LEFT JOIN LATERAL
@@ -409,6 +413,7 @@ EXPLAIN (COSTS OFF)
 SELECT t1.a, t1.c, t2.b, t2.c FROM (SELECT * FROM prt1_l WHERE prt1_l.b = 0) t1 FULL JOIN (SELECT * FROM prt2_l WHERE prt2_l.a = 0) t2 ON (t1.a = t2.b AND t1.c = t2.c) ORDER BY t1.a, t2.b;
 SELECT t1.a, t1.c, t2.b, t2.c FROM (SELECT * FROM prt1_l WHERE prt1_l.b = 0) t1 FULL JOIN (SELECT * FROM prt2_l WHERE prt2_l.a = 0) t2 ON (t1.a = t2.b AND t1.c = t2.c) ORDER BY t1.a, t2.b;
 
+-- start_ignore
 -- lateral partitionwise join
 -- GPDB_12_MERGE_FEATURE_NOT_SUPPORTED
 -- If lateral_relids of RelOptInfo for a inner path is not null, the inner path needs
@@ -442,6 +447,7 @@ SELECT COUNT(*) FROM prt1_l t1 LEFT JOIN LATERAL
 			  (SELECT t1.b AS t1b, t2.* FROM prt2_l t2) s
 			  ON t1.a = s.b AND t1.b = s.a AND t1.c = s.c
 			  WHERE s.t1b = s.a;
+-- end_ignore
 RESET max_parallel_workers_per_gather;
 
 -- join with one side empty

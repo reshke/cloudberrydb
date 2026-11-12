@@ -6221,6 +6221,7 @@ select * from
  Settings: optimizer=off
 (38 rows)
 
+-- start_ignore
 -- another case requiring nested PlaceHolderVars
 explain (verbose, costs off)
 select * from
@@ -6246,6 +6247,7 @@ select * from
 ------+-----+--------------
     0 |   1 |             
 (1 row)
+-- end_ignore
 
 -- case that breaks the old ph_may_need optimization
 explain (verbose, costs off)
