@@ -1403,7 +1403,7 @@ HeapTupleSatisfiesVacuumHorizon(Relation relation, HeapTuple htup, Buffer buffer
 			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(tuple)))
 				return HEAPTUPLE_DELETE_IN_PROGRESS;
 			/* deleting subtransaction must have aborted */
-			SetHintBits(tuple, buffer, HEAP_XMAX_INVALID,
+			SetHintBits(tuple, buffer, relation, HEAP_XMAX_INVALID,
 						InvalidTransactionId);
 			return HEAPTUPLE_INSERT_IN_PROGRESS;
 		}
