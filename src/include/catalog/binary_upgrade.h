@@ -19,8 +19,8 @@
 /* Per-attribute versions carried across a binary upgrade. */
 typedef struct BinaryUpgradeAttributeVersions
 {
-    int natts;
-    XLogRecPtr versions[FLEXIBLE_ARRAY_MEMBER];
+	int			natts;
+	XLogRecPtr	versions[FLEXIBLE_ARRAY_MEMBER];
 } BinaryUpgradeAttributeVersions;
 
 extern PGDLLIMPORT BinaryUpgradeAttributeVersions *binary_upgrade_next_attribute_versions;

@@ -939,8 +939,8 @@ heap_getattr(HeapTuple tup, int attnum, TupleDesc tupleDesc, bool *isnull)
 
     Assert(tup != NULL);
 
-    if (HeapTupleHeaderIsVersionedDatum(tup->t_data))
-        heap_datum_check(tup->t_data, tupleDesc);
+	if (HeapTupleHeaderIsVersionedDatum(tup->t_data))
+		heap_datum_check(tup->t_data, tupleDesc);
 
     if (attnum > (int)HeapTupleHeaderGetNatts(tup->t_data))
     {
@@ -958,9 +958,9 @@ extern PGDLLIMPORT int composite_type_mismatch;
 
 typedef enum CompositeTypeMismatchOptions
 {
-    COMPOSITE_TYPE_MISMATCH_ERROR,
-    COMPOSITE_TYPE_MISMATCH_WARN,
-    COMPOSITE_TYPE_MISMATCH_DISABLED,
+	COMPOSITE_TYPE_MISMATCH_ERROR,
+	COMPOSITE_TYPE_MISMATCH_WARN,
+	COMPOSITE_TYPE_MISMATCH_DISABLED,
 } CompositeTypeMismatchOptions;
 
 
