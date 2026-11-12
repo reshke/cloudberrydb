@@ -7675,12 +7675,9 @@ StartupXLOG(void)
 			 * during recovery and need not be started yet.
 			 */
 			StartupSUBTRANS(oldestActiveXID);
-<<<<<<< HEAD
+			SetRecoverySubtransInitialized();
 			DistributedLog_Startup(oldestActiveXID,
 								   XidFromFullTransactionId(ShmemVariableCache->nextXid));
-=======
-			SetRecoverySubtransInitialized();
->>>>>>> d3c9ccdf1ed (Fix checkpointer restartpoint assertion failure)
 
 			/*
 			 * If we're beginning at a shutdown checkpoint, we know that

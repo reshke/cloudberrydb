@@ -167,49 +167,20 @@ compute_return_type(TypeName *returnType, Oid languageOid,
 		char	   *typname;
 		ObjectAddress address;
 
-<<<<<<< HEAD
-		/*
-		 * Only C-coded functions can be I/O functions.  We enforce this
-		 * restriction here mainly to prevent littering the catalogs with
-		 * shell types due to simple typos in user-defined function
-		 * definitions.
-		 */
-		if (languageOid != INTERNALlanguageId &&
-			languageOid != ClanguageId)
-			ereport(ERROR,
-					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("type \"%s\" does not exist", typnam)));
-
-		/* Reject if there's typmod decoration, too */
-		if (returnType->typmods != NIL)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("type modifier cannot be specified for shell type \"%s\"",
-							typnam)));
-
-		/* Otherwise, go ahead and make a shell type */
+		/* Make a shell type */
 		if (Gp_role == GP_ROLE_EXECUTE)
-		{
 			ereport(DEBUG1,
-=======
-		ereport(NOTICE,
->>>>>>> ba2ea49b3cb (Don't create a shell type for function returning an array)
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("type \"%s\" is not yet defined",
-						TypeNameToString(returnType)),
-				 errdetail("Creating a shell type definition.")));
-<<<<<<< HEAD
-		}
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("type \"%s\" is not yet defined",
+							TypeNameToString(returnType)),
+					 errdetail("Creating a shell type definition.")));
 		else
-		{
 			ereport(NOTICE,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("type \"%s\" is not yet defined", typnam),
+					 errmsg("type \"%s\" is not yet defined",
+							TypeNameToString(returnType)),
 					 errdetail("Creating a shell type definition.")));
-		}
-=======
 
->>>>>>> ba2ea49b3cb (Don't create a shell type for function returning an array)
 		namespaceId = QualifiedNameGetCreationNamespace(returnType->names,
 														&typname);
 		aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(),
