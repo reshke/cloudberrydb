@@ -17656,12 +17656,14 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 					   qrelname);
 
 	if (dopt->binary_upgrade)
-		binary_upgrade_set_type_oids_by_rel_oid(fout, q, 	tbinfo->dobj.catId.oid);
+	{
+		binary_upgrade_set_type_oids_by_rel_oid(fout, q,
+										 tbinfo->dobj.catId.oid);
 
 		/* only relations with a row type have versioned attributes */
 		if (RELKIND_HAS_ROWTYPE(tbinfo->relkind))
 			binary_upgrade_set_next_attribute_versions(q, tbinfo->numatts,
-													   tbinfo->attversion);
+											   tbinfo->attversion);
 	}
 
 	/* Is it a table or a view? */
