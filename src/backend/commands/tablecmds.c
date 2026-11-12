@@ -11292,24 +11292,19 @@ set_random_distribution_if_drop_distkey(Relation rel, AttrNumber attnum)
 	{
 		if (attnum == rel->rd_cdbpolicy->attrs[ia])
 		{
-			MemoryContext oldcontext;
-			GpPolicy *policy;
-
-			/* force a random distribution */
-			rel->rd_cdbpolicy->nattrs = 0;
-
-			oldcontext = MemoryContextSwitchTo(GetMemoryChunkContext(rel));
-			policy = GpPolicyCopy(rel->rd_cdbpolicy);
-			MemoryContextSwitchTo(oldcontext);
+			GpPolicy   *policy = GpPolicyCopy(rel->rd_cdbpolicy);
 
 			/*
-			 * replace policy first in catalog and then assign to
-			 * rd_cdbpolicy to make sure we have intended policy in relcache
-			 * even with relcache invalidation. Otherwise rd_cdbpolicy can
-			 * become invalid soon after assignment.
+			 * Change only the catalog, not the cached policy.  An error before
+			 * the next CommandCounterIncrement would otherwise leave the
+			 * relcache inconsistent after a subtransaction rollback, since
+			 * current-command invalidations are discarded on abort.  The
+			 * policy update registers a relcache invalidation, which will take
+			 * effect at the CommandCounterIncrement in deleteOneObject().
 			 */
+			policy->nattrs = 0;
 			GpPolicyReplace(RelationGetRelid(rel), policy);
-			rel->rd_cdbpolicy = policy;
+			pfree(policy);
 			if (Gp_role != GP_ROLE_EXECUTE)
 				ereport(NOTICE,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

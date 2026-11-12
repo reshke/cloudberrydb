@@ -68,6 +68,9 @@ test: gp_terminate_mpp_backends
 # please keep it in a separate test group
 test: gpexpand_catalog_lock
 
+# Locks gp_distribution_policy, so keep it in a separate test group.
+test: drop_distkey_subtransaction
+
 test: reindex
 test: reindex_gpfastsequence
 test: commit_transaction_block_checkpoint
