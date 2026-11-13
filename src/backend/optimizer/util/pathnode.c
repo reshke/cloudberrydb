@@ -1841,6 +1841,7 @@ set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 	{
 		Path	   *subpath = (Path *) lfirst(l);
 		CdbLocusType subtype;
+		bool		found = false;
 		int			i;
 
 		if (CdbPathLocus_IsPartitioned(subpath->locus))
@@ -1866,6 +1867,7 @@ set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 				 append_locus_compatibility_table[i].b == targetlocustype))
 			{
 				targetlocustype = append_locus_compatibility_table[i].result;
+				found = true;
 				break;
 			}
 		}
@@ -1878,11 +1880,12 @@ set_append_path_locus(PlannerInfo *root, Path *pathnode, RelOptInfo *rel,
 				 parallel_append_locus_compatibility_table[i].b == targetlocustype))
 			{
 				targetlocustype = parallel_append_locus_compatibility_table[i].result;
+				found = true;
 				break;
 			}
 		}
 
-		if (i == lengthof(append_locus_compatibility_table))
+		if (!found)
 			elog(ERROR, "could not determine target locus for Append");
 	}
 
