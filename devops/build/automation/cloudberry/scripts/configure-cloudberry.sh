@@ -36,6 +36,7 @@
 #   - PAX Access Method
 #   - PXF External Table Access
 #   - Test Automation Support (tap-tests)
+#   - Yezzey Extension (yezzey)
 #
 # System Integration:
 #   - GSSAPI Authentication
@@ -67,6 +68,12 @@
 #
 #                 When true, add option:
 #                   --with-mdblocales
+#
+#   ENABLE_YEZZEY - Enable Yezzey extension (true/false, defaults to
+#                   false)
+#
+#                 When true, add option:
+#                   --with-yezzey
 #
 # Prerequisites:
 #   - System dependencies must be installed:
@@ -121,7 +128,7 @@ log_section "Initial Setup"
 execute_cmd sudo rm -rf ${BUILD_DESTINATION} || exit 2
 execute_cmd sudo chmod a+w /usr/local || exit 2
 execute_cmd sudo mkdir -p ${BUILD_DESTINATION}/lib || exit 2
-if [[ "$OS_ID" == "rocky" && "$OS_VERSION" =~ ^(8|9) ]]; then
+if [[ "$OS_ID" == "rocky" && "$OS_VERSION" =~ ^(8|9|10) ]]; then
     execute_cmd sudo cp /usr/local/xerces-c/lib/libxerces-c.so \
                 /usr/local/xerces-c/lib/libxerces-c-3.3.so \
                 ${BUILD_DESTINATION}/lib || exit 3
@@ -131,7 +138,7 @@ log_section_end "Initial Setup"
 
 # Set environment
 log_section "Environment Setup"
-export LD_LIBRARY_PATH=${BUILD_DESTINATION}/lib:LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=${BUILD_DESTINATION}/lib:${LD_LIBRARY_PATH:-""}
 log_section_end "Environment Setup"
 
 # Add debug options if ENABLE_DEBUG is set to "true"
@@ -149,6 +156,11 @@ if [ "${ENABLE_MDBLOCALES:-false}" = "true" ]; then
     CONFIGURE_MDBLOCALES_OPTS="--with-mdblocales"
 fi
 
+CONFIGURE_YEZZEY_OPTS=""
+if [ "${ENABLE_YEZZEY:-false}" = "true" ]; then
+    CONFIGURE_YEZZEY_OPTS="--with-yezzey"
+fi
+
 # Configure build
 log_section "Configure"
 execute_cmd ./configure --prefix=${BUILD_DESTINATION} \
@@ -162,6 +174,8 @@ execute_cmd ./configure --prefix=${BUILD_DESTINATION} \
             --disable-pxf \
             --enable-tap-tests \
             ${CONFIGURE_DEBUG_OPTS} \
+            --with-diskquota \
+            --with-gp-stats-collector \
             --with-gssapi \
             --with-ldap \
             --with-libxml \
@@ -176,13 +190,15 @@ execute_cmd ./configure --prefix=${BUILD_DESTINATION} \
             --with-openssl \
             --with-uuid=e2fs \
             ${CONFIGURE_MDBLOCALES_OPTS} \
+            ${CONFIGURE_YEZZEY_OPTS} \
+     ${CONFIGURE_EXTRA_OPTS:-} \
             --with-includes=/usr/local/xerces-c/include \
             --with-libraries=${BUILD_DESTINATION}/lib || exit 4
 log_section_end "Configure"
 
 # Capture version information
 log_section "Version Information"
-execute_cmd ag "GP_VERSION | GP_VERSION_NUM | PG_VERSION | PG_VERSION_NUM | PG_VERSION_STR" src/include/pg_config.h
+execute_cmd grep -E "GP_VERSION|GP_VERSION_NUM|PG_VERSION|PG_VERSION_NUM|PG_VERSION_STR" src/include/pg_config.h || true
 log_section_end "Version Information"
 
 # Log completion

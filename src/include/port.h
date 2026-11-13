@@ -54,6 +54,7 @@ extern void make_native_path(char *path);
 extern void cleanup_path(char *path);
 extern bool path_contains_parent_reference(const char *path);
 extern bool path_is_relative_and_below_cwd(const char *path);
+extern bool path_is_safe_for_extraction(const char *path);
 extern bool path_is_prefix_of_path(const char *path1, const char *path2);
 extern char *make_absolute_path(const char *path);
 extern const char *get_progname(const char *argv0);
@@ -140,6 +141,11 @@ extern char *pipe_read_line(char *cmd, char *line, int maxsize);
 /* Doesn't belong here, but this is used with find_other_exec(), so... */
 #define PG_VERSIONSTR "postgres (Apache Cloudberry) " PG_VERSION "\n"
 #define PG_BACKEND_VERSIONSTR "postgres (Apache Cloudberry) " PG_VERSION "\n"
+
+#ifdef EXEC_BACKEND
+/* Disable ASLR before exec, for developer builds only (in exec.c) */
+extern int pg_disable_aslr(void);
+#endif
 
 
 #if defined(WIN32) || defined(__CYGWIN__)
@@ -503,6 +509,10 @@ extern int	pqGethostbyname(const char *name,
 							char *buffer, size_t buflen,
 							struct hostent **result,
 							int *herrno);
+
+#if !HAVE_DECL_TIMINGSAFE_BCMP
+extern int	timingsafe_bcmp(const void *b1, const void *b2, size_t len);
+#endif
 
 extern void pg_qsort(void *base, size_t nel, size_t elsize,
 					 int (*cmp) (const void *, const void *));

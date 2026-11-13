@@ -777,6 +777,13 @@ bringetbitmap(IndexScanDesc scan, Node **bmNodeP)
 								break;
 						}
 					}
+
+					/*
+					 * If we found a scan key eliminating the range, no need to
+					 * check additional ones.
+					 */
+					if (!addrange)
+						break;
 				}
 			}
 		}
@@ -1234,8 +1241,14 @@ brin_summarize_range_internal(PG_FUNCTION_ARGS)
 				 errmsg("could not open parent table of index \"%s\"",
 						RelationGetRelationName(indexRel))));
 
-	/* OK, do it */
-	brinsummarize(indexRel, heapRel, heapBlk, true, &numSummarized, NULL);
+	/* see gin_clean_pending_list() */
+	if (indexRel->rd_index->indisvalid)
+		brinsummarize(indexRel, heapRel, heapBlk, true, &numSummarized, NULL);
+	else
+		ereport(DEBUG1,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" is not valid",
+						RelationGetRelationName(indexRel))));
 
 	/* Roll back any GUC changes executed by index functions */
 	AtEOXact_GUC(false, save_nestlevel);
@@ -1320,12 +1333,21 @@ brin_desummarize_range(PG_FUNCTION_ARGS)
 				 errmsg("could not open parent table of index \"%s\"",
 						RelationGetRelationName(indexRel))));
 
-	/* the revmap does the hard work */
-	do
+	/* see gin_clean_pending_list() */
+	if (indexRel->rd_index->indisvalid)
 	{
-		done = brinRevmapDesummarizeRange(indexRel, heapBlk);
+		/* the revmap does the hard work */
+		do
+		{
+			done = brinRevmapDesummarizeRange(indexRel, heapBlk);
+		}
+		while (!done);
 	}
-	while (!done);
+	else
+		ereport(DEBUG1,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" is not valid",
+						RelationGetRelationName(indexRel))));
 
 	relation_close(indexRel, ShareUpdateExclusiveLock);
 	relation_close(heapRel, ShareUpdateExclusiveLock);
@@ -1925,8 +1947,11 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
 
 		if (opcinfo->oi_regular_nulls)
 		{
+			/* Does the "b" summary represent any NULL values? */
+			bool		b_has_nulls = (col_b->bv_hasnulls || col_b->bv_allnulls);
+
 			/* Adjust "hasnulls". */
-			if (!col_a->bv_hasnulls && col_b->bv_hasnulls)
+			if (!col_a->bv_allnulls && b_has_nulls)
 				col_a->bv_hasnulls = true;
 
 			/* If there are no values in B, there's nothing left to do. */
@@ -1938,12 +1963,17 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
 			 * values from B into A, and we're done.  We cannot run the
 			 * operators in this case, because values in A might contain
 			 * garbage.  Note we already established that B contains values.
+			 *
+			 * Also adjust "hasnulls" in order not to forget the summary
+			 * represents NULL values. This is not redundant with the earlier
+			 * update, because that only happens when allnulls=false.
 			 */
 			if (col_a->bv_allnulls)
 			{
 				int			i;
 
 				col_a->bv_allnulls = false;
+				col_a->bv_hasnulls = true;
 
 				for (i = 0; i < opcinfo->oi_nstored; i++)
 					col_a->bv_values[i] =

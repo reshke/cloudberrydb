@@ -528,7 +528,16 @@ struct pg_conn
 	PGContextVisibility show_context;	/* whether to show CONTEXT field */
 	PGlobjfuncs *lobjfuncs;		/* private state for large-object access fns */
 
-	/* Buffer for data received from backend and not yet processed */
+	/*
+	 * Buffer for data received from backend and not yet processed.
+	 *
+	 * NB: We rely on a maximum inBufSize/outBufSize of INT_MAX (and therefore
+	 * an INT_MAX upper bound on the size of any and all packet contents) to
+	 * avoid overflow; for example in reportErrorPosition(). Changing the type
+	 * would require not only an adjustment to the overflow protection in
+	 * pqCheck{In,Out}BufferSpace(), but also a careful audit of all libpq
+	 * code that uses ints during size calculations.
+	 */
 	char	   *inBuffer;		/* currently allocated buffer */
 	int			inBufSize;		/* allocated size of buffer */
 	int			inStart;		/* offset to first unconsumed data in buffer */
@@ -599,8 +608,8 @@ struct pg_conn
 	int			gss_SendLength; /* End of data available in gss_SendBuffer */
 	int			gss_SendNext;	/* Next index to send a byte from
 								 * gss_SendBuffer */
-	int			gss_SendConsumed;	/* Number of *unencrypted* bytes consumed
-									 * for current contents of gss_SendBuffer */
+	int			gss_SendConsumed;	/* Number of source bytes encrypted but
+									 * not yet reported as sent */
 	char	   *gss_RecvBuffer; /* Received, encrypted data */
 	int			gss_RecvLength; /* End of data available in gss_RecvBuffer */
 	char	   *gss_ResultBuffer;	/* Decryption of data in gss_RecvBuffer */
@@ -732,8 +741,12 @@ extern PGresult *pqFunctionCall2(PGconn *conn, Oid fnid,
 								 int result_is_int,
 								 const PQArgBlock *args, int nargs);
 
-extern void pqCommandQueueAdvance(PGconn *conn);
+extern void pqCommandQueueAdvance(PGconn *conn, bool isReadyForQuery,
+								  bool gotSync);
 extern int	PQsendQueryContinue(PGconn *conn, const char *query);
+extern PGresult *PQnfn(PGconn *conn, int fnid, int *result_buf, int buf_size,
+					   int *result_len, int result_is_int,
+					   const PQArgBlock *args, int nargs);
 
 
 /* === in fe-protocol3.c === */
@@ -749,7 +762,8 @@ extern int	pqGetline3(PGconn *conn, char *s, int maxlen);
 extern int	pqGetlineAsync3(PGconn *conn, char *buffer, int bufsize);
 extern int	pqEndcopy3(PGconn *conn);
 extern PGresult *pqFunctionCall3(PGconn *conn, Oid fnid,
-								 int *result_buf, int *actual_result_len,
+								 int *result_buf, int buf_size,
+								 int *actual_result_len,
 								 int result_is_int,
 								 const PQArgBlock *args, int nargs);
 
@@ -869,7 +883,7 @@ extern ssize_t pgtls_write(PGconn *conn, const void *ptr, size_t len);
  * This is not supported with old versions of OpenSSL that don't have
  * the X509_get_signature_nid() function.
  */
-#if defined(USE_OPENSSL) && defined(HAVE_X509_GET_SIGNATURE_NID)
+#if defined(USE_OPENSSL) && (defined(HAVE_X509_GET_SIGNATURE_NID) || defined(HAVE_X509_GET_SIGNATURE_INFO))
 #define HAVE_PGTLS_GET_PEER_CERTIFICATE_HASH
 extern char *pgtls_get_peer_certificate_hash(PGconn *conn, size_t *len);
 #endif

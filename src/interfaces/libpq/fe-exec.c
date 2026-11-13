@@ -515,7 +515,7 @@ PQsetvalue(PGresult *res, int tup_num, int field_num, char *value, int len)
 	}
 	else
 	{
-		attval->value = (char *) pqResultAlloc(res, len + 1, true);
+		attval->value = (char *) pqResultAlloc(res, (size_t) len + 1, true);
 		if (!attval->value)
 			goto fail;
 		attval->len = len;
@@ -603,8 +603,13 @@ pqResultAlloc(PGresult *res, size_t nBytes, bool isBinary)
 	 */
 	if (nBytes >= PGRESULT_SEP_ALLOC_THRESHOLD)
 	{
-		size_t		alloc_size = nBytes + PGRESULT_BLOCK_OVERHEAD;
+		size_t		alloc_size;
 
+		/* Don't wrap around with overly large requests. */
+		if (nBytes > SIZE_MAX - PGRESULT_BLOCK_OVERHEAD)
+			return NULL;
+
+		alloc_size = nBytes + PGRESULT_BLOCK_OVERHEAD;
 		block = (PGresult_data *) malloc(alloc_size);
 		if (!block)
 			return NULL;
@@ -1191,7 +1196,7 @@ pqRowProcessor(PGconn *conn, const char **errmsgp)
 			bool		isbinary = (res->attDescs[i].format != 0);
 			char	   *val;
 
-			val = (char *) pqResultAlloc(res, clen + 1, isbinary);
+			val = (char *) pqResultAlloc(res, (size_t) clen + 1, isbinary);
 			if (val == NULL)
 				goto fail;
 
@@ -2113,10 +2118,9 @@ PQgetResult(PGconn *conn)
 
 			/*
 			 * We're about to return the NULL that terminates the round of
-			 * results from the current query; prepare to send the results
-			 * of the next query, if any, when we're called next.  If there's
-			 * no next element in the command queue, this gets us in IDLE
-			 * state.
+			 * results from the current query; prepare to send the results of
+			 * the next query, if any, when we're called next.  If there's no
+			 * next element in the command queue, this gets us in IDLE state.
 			 */
 			resetPQExpBuffer(&conn->errorMessage);
 			pqPipelineProcessQueue(conn);
@@ -2124,19 +2128,13 @@ PQgetResult(PGconn *conn)
 			break;
 
 		case PGASYNC_READY:
-
-			/*
-			 * For any query type other than simple query protocol, we advance
-			 * the command queue here.  This is because for simple query
-			 * protocol we can get the READY state multiple times before the
-			 * command is actually complete, since the command string can
-			 * contain many queries.  In simple query protocol, the queue
-			 * advance is done by fe-protocol3 when it receives ReadyForQuery.
-			 */
-			if (conn->cmd_queue_head &&
-				conn->cmd_queue_head->queryclass != PGQUERY_SIMPLE)
-				pqCommandQueueAdvance(conn);
 			res = pqPrepareAsyncResult(conn);
+
+			/* Advance the queue as appropriate */
+			if (res)
+				pqCommandQueueAdvance(conn, false,
+									  res->resultStatus == PGRES_PIPELINE_SYNC);
+
 			if (conn->pipelineStatus != PQ_PIPELINE_OFF)
 			{
 				/*
@@ -2200,7 +2198,7 @@ PQgetResult(PGconn *conn)
 		}
 		else
 			/* we won't ever see the Close */
-			pqCommandQueueAdvance(conn);
+			pqCommandQueueAdvance(conn, false, false);
 	}
 
 	if (res)
@@ -2921,6 +2919,20 @@ PQfn(PGconn *conn,
 	 const PQArgBlock *args,
 	 int nargs)
 {
+	return PQnfn(conn, fnid, result_buf, -1, result_len,
+				 result_is_int, args, nargs);
+}
+
+/*
+ * PQnfn
+ *		Private version of PQfn() with verification that returned data fits in
+ *		result_buf when result_is_int == 0.  Setting buf_size to -1 disables
+ *		this verification.
+ */
+PGresult *
+PQnfn(PGconn *conn, int fnid, int *result_buf, int buf_size, int *result_len,
+	  int result_is_int, const PQArgBlock *args, int nargs)
+{
 	*result_len = 0;
 
 	if (!conn)
@@ -2947,7 +2959,7 @@ PQfn(PGconn *conn,
 	}
 
 	return pqFunctionCall3(conn, fnid,
-						   result_buf, result_len,
+						   result_buf, buf_size, result_len,
 						   result_is_int,
 						   args, nargs);
 }
@@ -3062,18 +3074,44 @@ PQexitPipelineMode(PGconn *conn)
 
 /*
  * pqCommandQueueAdvance
- *		Remove one query from the command queue, when we receive
- *		all results from the server that pertain to it.
+ *		Remove one query from the command queue, if appropriate.
+ *
+ * If we have received all results corresponding to the head element
+ * in the command queue, remove it.
+ *
+ * In simple query protocol we must not advance the command queue until the
+ * ReadyForQuery message has been received.  This is because in simple mode a
+ * command can have multiple queries, and we must process result for all of
+ * them before moving on to the next command.
+ *
+ * Another consideration is synchronization during error processing in
+ * extended query protocol: we refuse to advance the queue past a SYNC queue
+ * element, unless the result we've received is also a SYNC.  In particular
+ * this protects us from advancing when an error is received at an
+ * inappropriate moment.
  */
 void
-pqCommandQueueAdvance(PGconn *conn)
+pqCommandQueueAdvance(PGconn *conn, bool isReadyForQuery, bool gotSync)
 {
 	PGcmdQueueEntry *prevquery;
 
 	if (conn->cmd_queue_head == NULL)
 		return;
 
-	/* delink from queue */
+	/*
+	 * If processing a query of simple query protocol, we only advance the
+	 * queue when we receive the ReadyForQuery message for it.
+	 */
+	if (conn->cmd_queue_head->queryclass == PGQUERY_SIMPLE && !isReadyForQuery)
+		return;
+
+	/*
+	 * If we're waiting for a SYNC, don't advance the queue until we get one.
+	 */
+	if (conn->cmd_queue_head->queryclass == PGQUERY_SYNC && !gotSync)
+		return;
+
+	/* delink element from queue */
 	prevquery = conn->cmd_queue_head;
 	conn->cmd_queue_head = conn->cmd_queue_head->next;
 
@@ -3081,7 +3119,7 @@ pqCommandQueueAdvance(PGconn *conn)
 	if (conn->cmd_queue_head == NULL)
 		conn->cmd_queue_tail = NULL;
 
-	/* and make it recyclable */
+	/* and make the queue element recyclable */
 	prevquery->next = NULL;
 	pqRecycleCmdQueueEntry(conn, prevquery);
 }
@@ -3105,6 +3143,7 @@ pqPipelineProcessQueue(PGconn *conn)
 			return;
 
 		case PGASYNC_IDLE:
+
 			/*
 			 * If we're in IDLE mode and there's some command in the queue,
 			 * get us into PIPELINE_IDLE mode and process normally.  Otherwise
@@ -3286,6 +3325,14 @@ PQsendFlushRequest(PGconn *conn)
 	{
 		return 0;
 	}
+
+	/*
+	 * Give the data a push (in pipeline mode, only if we're past the size
+	 * threshold).  In nonblock mode, don't complain if we're unable to send
+	 * it all; PQgetResult() will do any additional flushing needed.
+	 */
+	if (pqPipelineFlush(conn) < 0)
+		return 0;
 
 	return 1;
 }
@@ -3986,7 +4033,8 @@ PQescapeStringInternal(PGconn *conn,
 		}
 
 		/* Slow path for possible multibyte characters */
-		charlen = pg_encoding_mblen(encoding, source);
+		charlen = pg_encoding_mblen_or_incomplete(encoding,
+												  source, remaining);
 
 		if (remaining < charlen)
 		{
@@ -4098,6 +4146,27 @@ PQescapeString(char *to, const char *from, size_t length)
 
 
 /*
+ * Frontend version of the backend's add_size(), intended to be API-compatible
+ * with the pg_add_*_overflow() helpers. Stores the result into *dst on success.
+ * Returns true instead if the addition overflows.
+ *
+ * TODO: move to common/int.h
+ */
+static bool
+add_size_overflow(size_t s1, size_t s2, size_t *dst)
+{
+	size_t		result;
+
+	result = s1 + s2;
+	if (result < s1 || result < s2)
+		return true;
+
+	*dst = result;
+	return false;
+}
+
+
+/*
  * Escape arbitrary strings.  If as_ident is true, we escape the result
  * as an identifier; if false, as a literal.  The result is returned in
  * a newly allocated buffer.  If we fail due to an encoding violation or out
@@ -4109,9 +4178,9 @@ PQescapeInternal(PGconn *conn, const char *str, size_t len, bool as_ident)
 	const char *s;
 	char	   *result;
 	char	   *rp;
-	int			num_quotes = 0; /* single or double, depending on as_ident */
-	int			num_backslashes = 0;
-	size_t		input_len = strlen(str);
+	size_t		num_quotes = 0; /* single or double, depending on as_ident */
+	size_t		num_backslashes = 0;
+	size_t		input_len = strnlen(str, len);
 	size_t		result_size;
 	char		quote_char = as_ident ? '"' : '\'';
 	bool		validated_mb = false;
@@ -4138,7 +4207,8 @@ PQescapeInternal(PGconn *conn, const char *str, size_t len, bool as_ident)
 			int			charlen;
 
 			/* Slow path for possible multibyte characters */
-			charlen = pg_encoding_mblen(conn->client_encoding, s);
+			charlen = pg_encoding_mblen_or_incomplete(conn->client_encoding,
+													  s, remaining);
 
 			if (charlen > remaining)
 			{
@@ -4160,7 +4230,7 @@ PQescapeInternal(PGconn *conn, const char *str, size_t len, bool as_ident)
 			if (!validated_mb)
 			{
 				if (pg_encoding_verifymbstr(conn->client_encoding, s, remaining)
-					!= strlen(s))
+					!= remaining)
 				{
 					appendPQExpBufferStr(&conn->errorMessage,
 										 libpq_gettext("invalid multibyte character\n"));
@@ -4175,10 +4245,21 @@ PQescapeInternal(PGconn *conn, const char *str, size_t len, bool as_ident)
 		}
 	}
 
-	/* Allocate output buffer. */
-	result_size = input_len + num_quotes + 3;	/* two quotes, plus a NUL */
+	/*
+	 * Allocate output buffer. Protect against overflow, in case the caller
+	 * has allocated a large fraction of the available size_t.
+	 */
+	if (add_size_overflow(input_len, num_quotes, &result_size) ||
+		add_size_overflow(result_size, 3, &result_size))	/* two quotes plus a NUL */
+		goto overflow;
+
 	if (!as_ident && num_backslashes > 0)
-		result_size += num_backslashes + 2;
+	{
+		if (add_size_overflow(result_size, num_backslashes, &result_size) ||
+			add_size_overflow(result_size, 2, &result_size))	/* for " E" prefix */
+			goto overflow;
+	}
+
 	result = rp = (char *) malloc(result_size);
 	if (rp == NULL)
 	{
@@ -4252,6 +4333,12 @@ PQescapeInternal(PGconn *conn, const char *str, size_t len, bool as_ident)
 	*rp = '\0';
 
 	return result;
+
+overflow:
+	appendPQExpBuffer(&conn->errorMessage,
+					  libpq_gettext("escaped string size exceeds the maximum allowed (%zu)\n"),
+					  SIZE_MAX);
+	return NULL;
 }
 
 char *
@@ -4317,16 +4404,25 @@ PQescapeByteaInternal(PGconn *conn,
 	unsigned char *result;
 	size_t		i;
 	size_t		len;
-	size_t		bslash_len = (std_strings ? 1 : 2);
+	const size_t bslash_len = (std_strings ? 1 : 2);
 
 	/*
-	 * empty string has 1 char ('\0')
+	 * Calculate the escaped length, watching for overflow as we do with
+	 * PQescapeInternal(). The following code relies on a small constant
+	 * bslash_len so that small additions and multiplications don't need their
+	 * own overflow checks.
+	 *
+	 * Start with the empty string, which has 1 char ('\0').
 	 */
 	len = 1;
 
 	if (use_hex)
 	{
-		len += bslash_len + 1 + 2 * from_length;
+		/* We prepend "\x" and double each input character. */
+		if (add_size_overflow(len, bslash_len + 1, &len) ||
+			add_size_overflow(len, from_length, &len) ||
+			add_size_overflow(len, from_length, &len))
+			goto overflow;
 	}
 	else
 	{
@@ -4334,13 +4430,25 @@ PQescapeByteaInternal(PGconn *conn,
 		for (i = from_length; i > 0; i--, vp++)
 		{
 			if (*vp < 0x20 || *vp > 0x7e)
-				len += bslash_len + 3;
+			{
+				if (add_size_overflow(len, bslash_len + 3, &len))	/* octal "\ooo" */
+					goto overflow;
+			}
 			else if (*vp == '\'')
-				len += 2;
+			{
+				if (add_size_overflow(len, 2, &len))	/* double each quote */
+					goto overflow;
+			}
 			else if (*vp == '\\')
-				len += bslash_len + bslash_len;
+			{
+				if (add_size_overflow(len, bslash_len * 2, &len))	/* double each backslash */
+					goto overflow;
+			}
 			else
-				len++;
+			{
+				if (add_size_overflow(len, 1, &len))
+					goto overflow;
+			}
 		}
 	}
 
@@ -4402,6 +4510,13 @@ PQescapeByteaInternal(PGconn *conn,
 	*rp = '\0';
 
 	return result;
+
+overflow:
+	if (conn)
+		appendPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("escaped bytea size exceeds the maximum allowed (%zu)\n"),
+						  SIZE_MAX);
+	return NULL;
 }
 
 unsigned char *

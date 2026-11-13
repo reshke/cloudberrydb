@@ -436,14 +436,21 @@ MultiExecParallelHash(HashState *node)
 	hashtable->nbuckets = pstate->nbuckets;
 	hashtable->log2_nbuckets = my_log2(hashtable->nbuckets);
 	hashtable->totalTuples = pstate->total_tuples;
-	ExecParallelHashEnsureBatchAccessors(hashtable);
+
+	/*
+	 * Unless we're completely done and the batch state has been freed, make
+	 * sure we have accessors.
+	 */
+	if (BarrierPhase(build_barrier) < PHJ_BUILD_DONE)
+		ExecParallelHashEnsureBatchAccessors(hashtable);
 
 	/*
 	 * The next synchronization point is in ExecHashJoin's HJ_BUILD_HASHTABLE
-	 * case, which will bring the build phase to PHJ_BUILD_DONE (if it isn't
-	 * there already).
+	 * case, which will bring the build phase to PHJ_BUILD_RUNNING (if it
+	 * isn't there already).
 	 */
 	Assert(BarrierPhase(build_barrier) == PHJ_BUILD_HASHING_OUTER ||
+		   BarrierPhase(build_barrier) == PHJ_BUILD_RUNNING ||
 		   BarrierPhase(build_barrier) == PHJ_BUILD_DONE);
 }
 
@@ -752,7 +759,7 @@ ExecHashTableCreate(HashState *state, HashJoinState *hjstate,
 		/*
 		 * The next Parallel Hash synchronization point is in
 		 * MultiExecParallelHash(), which will progress it all the way to
-		 * PHJ_BUILD_DONE.  The caller must not return control from this
+		 * PHJ_BUILD_RUNNING.  The caller must not return control from this
 		 * executor node between now and then.
 		 */
 	}
@@ -1412,6 +1419,7 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 					double		dtuples;
 					double		dbuckets;
 					int			new_nbuckets;
+					uint32		max_buckets;
 
 					/*
 					 * We probably also need a smaller bucket array.  How many
@@ -1424,9 +1432,16 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 					 * array.
 					 */
 					dtuples = (old_batch0->ntuples * 2.0) / new_nbatch;
+
+					/*
+					 * Bound the bucket count before it is rounded up to a
+					 * power of 2, so the resulting allocation stays within
+					 * MaxAllocSize.
+					 */
+					max_buckets = pg_prevpower2_32((uint32)
+												   (MaxAllocSize / sizeof(dsa_pointer_atomic)));
 					dbuckets = ceil(dtuples / gp_hashjoin_tuples_per_bucket);
-					dbuckets = Min(dbuckets,
-								   MaxAllocSize / sizeof(dsa_pointer_atomic));
+					dbuckets = Min(dbuckets, max_buckets);
 					new_nbuckets = (int) dbuckets;
 					new_nbuckets = Max(new_nbuckets, 1024);
 					new_nbuckets = pg_nextpower2_32(new_nbuckets);
@@ -2004,6 +2019,7 @@ retry:
 		/* Store the hash value in the HashJoinTuple header. */
 		hashTuple->hashvalue = hashvalue;
 		memcpy(HJTUPLE_MINTUPLE(hashTuple), tuple, tuple->t_len);
+		HeapTupleHeaderClearMatch(HJTUPLE_MINTUPLE(hashTuple));
 
 		/* Push it onto the front of the bucket's list */
 		ExecParallelHashPushTuple(&hashtable->buckets.shared[bucketno],
@@ -2389,6 +2405,69 @@ ExecPrepHashTableForUnmatched(HashJoinState *hjstate)
 }
 
 /*
+ * Decide if this process is allowed to run the unmatched scan.  If so, the
+ * batch barrier is advanced to PHJ_BATCH_SCAN and true is returned.
+ * Otherwise the batch is detached and false is returned.
+ */
+bool
+ExecParallelPrepHashTableForUnmatched(HashJoinState *hjstate)
+{
+	HashJoinTable hashtable = hjstate->hj_HashTable;
+	int			curbatch = hashtable->curbatch;
+	ParallelHashJoinBatch *batch = hashtable->batches[curbatch].shared;
+
+	Assert(BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_PROBING);
+
+	/*
+	 * It would not be deadlock-free to wait on the batch barrier, because it
+	 * is in PHJ_BATCH_PROBING phase, and thus processes attached to it have
+	 * already emitted tuples.  Therefore, we'll hold a wait-free election:
+	 * only one process can continue to the next phase, and all others detach
+	 * from this batch.  They can still go any work on other batches, if there
+	 * are any.
+	 */
+	if (!BarrierArriveAndDetachExceptLast(&batch->batch_barrier))
+	{
+		/* This process considers the batch to be done. */
+		hashtable->batches[hashtable->curbatch].done = true;
+
+		/* Make sure any temporary files are closed. */
+		sts_end_parallel_scan(hashtable->batches[curbatch].inner_tuples);
+		sts_end_parallel_scan(hashtable->batches[curbatch].outer_tuples);
+
+		/*
+		 * Track largest batch we've seen, which would normally happen in
+		 * ExecHashTableDetachBatch().
+		 */
+		hashtable->spacePeak =
+			Max(hashtable->spacePeak,
+				batch->size + sizeof(dsa_pointer_atomic) * hashtable->nbuckets);
+		hashtable->curbatch = -1;
+		return false;
+	}
+
+	/* Now we are alone with this batch. */
+	Assert(BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_SCAN);
+	Assert(BarrierParticipants(&batch->batch_barrier) == 1);
+
+	/*
+	 * Has another process decided to give up early and command all processes
+	 * to skip the unmatched scan?
+	 */
+	if (batch->skip_unmatched)
+	{
+		hashtable->batches[hashtable->curbatch].done = true;
+		ExecHashTableDetachBatch(hashtable);
+		return false;
+	}
+
+	/* Now prepare the process local state, just as for non-parallel join. */
+	ExecPrepHashTableForUnmatched(hjstate);
+
+	return true;
+}
+
+/*
  * ExecScanHashTableForUnmatched
  *		scan the hash table for unmatched inner tuples
  *
@@ -2450,6 +2529,72 @@ ExecScanHashTableForUnmatched(HashJoinState *hjstate, ExprContext *econtext)
 			}
 
 			hashTuple = hashTuple->next.unshared;
+		}
+
+		/* allow this loop to be cancellable */
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	/*
+	 * no more unmatched tuples
+	 */
+	return false;
+}
+
+/*
+ * ExecParallelScanHashTableForUnmatched
+ *		scan the hash table for unmatched inner tuples, in parallel join
+ *
+ * On success, the inner tuple is stored into hjstate->hj_CurTuple and
+ * econtext->ecxt_innertuple, using hjstate->hj_HashTupleSlot as the slot
+ * for the latter.
+ */
+bool
+ExecParallelScanHashTableForUnmatched(HashJoinState *hjstate,
+									  ExprContext *econtext)
+{
+	HashJoinTable hashtable = hjstate->hj_HashTable;
+	HashJoinTuple hashTuple = hjstate->hj_CurTuple;
+
+	for (;;)
+	{
+		/*
+		 * hj_CurTuple is the address of the tuple last returned from the
+		 * current bucket, or NULL if it's time to start scanning a new
+		 * bucket.
+		 */
+		if (hashTuple != NULL)
+			hashTuple = ExecParallelHashNextTuple(hashtable, hashTuple);
+		else if (hjstate->hj_CurBucketNo < hashtable->nbuckets)
+			hashTuple = ExecParallelHashFirstTuple(hashtable,
+												   hjstate->hj_CurBucketNo++);
+		else
+			break;				/* finished all buckets */
+
+		while (hashTuple != NULL)
+		{
+			if (!HeapTupleHeaderHasMatch(HJTUPLE_MINTUPLE(hashTuple)))
+			{
+				TupleTableSlot *inntuple;
+
+				/* insert hashtable's tuple into exec slot */
+				inntuple = ExecStoreMinimalTuple(HJTUPLE_MINTUPLE(hashTuple),
+												 hjstate->hj_HashTupleSlot,
+												 false);	/* do not pfree */
+				econtext->ecxt_innertuple = inntuple;
+
+				/*
+				 * Reset temp memory each time; although this function doesn't
+				 * do any qual eval, the caller will, so let's keep it
+				 * parallel to ExecScanHashBucket.
+				 */
+				ResetExprContext(econtext);
+
+				hjstate->hj_CurTuple = hashTuple;
+				return true;
+			}
+
+			hashTuple = ExecParallelHashNextTuple(hashtable, hashTuple);
 		}
 
 		/* allow this loop to be cancellable */
@@ -3763,14 +3908,11 @@ ExecParallelHashEnsureBatchAccessors(HashJoinTable hashtable)
 	}
 
 	/*
-	 * It's possible for a backend to start up very late so that the whole
-	 * join is finished and the shm state for tracking batches has already
-	 * been freed by ExecHashTableDetach().  In that case we'll just leave
-	 * hashtable->batches as NULL so that ExecParallelHashJoinNewBatch() gives
-	 * up early.
+	 * We should never see a state where the batch-tracking array is freed,
+	 * because we should have given up sooner if we join when the build
+	 * barrier has reached the PHJ_BUILD_DONE phase.
 	 */
-	if (!DsaPointerIsValid(pstate->batches))
-		return;
+	Assert(DsaPointerIsValid(pstate->batches));
 
 	/* Use hash join memory context. */
 	oldcxt = MemoryContextSwitchTo(hashtable->hashCxt);
@@ -3793,6 +3935,7 @@ ExecParallelHashEnsureBatchAccessors(HashJoinTable hashtable)
 		accessor->shared = shared;
 		accessor->preallocated = 0;
 		accessor->done = false;
+		accessor->outer_eof = false;
 		accessor->inner_tuples =
 			sts_attach(ParallelHashJoinBatchInner(shared),
 					   hashtable->hjstate->worker_id,
@@ -3838,25 +3981,63 @@ ExecHashTableDetachBatch(HashJoinTable hashtable)
 	{
 		int			curbatch = hashtable->curbatch;
 		ParallelHashJoinBatch *batch = hashtable->batches[curbatch].shared;
+		bool		attached = true;
 
 		/* Make sure any temporary files are closed. */
 		sts_end_parallel_scan(hashtable->batches[curbatch].inner_tuples);
 		sts_end_parallel_scan(hashtable->batches[curbatch].outer_tuples);
 
-		/* Detach from the batch we were last working on. */
+		/* After attaching we always get at least to PHJ_BATCH_PROBING. */
+		Assert(BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_PROBING ||
+			   BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_SCAN);
+
+		/*
+		 * If we're abandoning the PHJ_BATCH_PROBING phase early without having
+		 * reached the end of it, it means the plan doesn't want any more
+		 * tuples, and it is happy to abandon any tuples buffered in this
+		 * process's subplans.  For correctness, we can't allow any process to
+		 * execute the PHJ_BATCH_SCAN phase, because we will never have the
+		 * complete set of match bits.  Therefore we skip emitting unmatched
+		 * tuples in all backends (if this is a full/right join), as if those
+		 * tuples were all due to be emitted by this process and it has
+		 * abandoned them too.
+		 */
 		/*
 		 * CBDB_PARALLEL: Parallel Hash Left Anti Semi (Not-In) Join(parallel-aware)
 		 * If phs_lasj_has_null is true, that means we have found null when building hash table,
 		 * there were no batches to detach.
 		 */
-		if (!hashtable->parallel_state->phs_lasj_has_null && BarrierArriveAndDetach(&batch->batch_barrier))
+		if (BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_PROBING &&
+			!hashtable->parallel_state->phs_lasj_has_null && /* CBDB_PARALLEL */
+			!hashtable->batches[curbatch].outer_eof)
 		{
 			/*
-			 * Technically we shouldn't access the barrier because we're no
-			 * longer attached, but since there is no way it's moving after
-			 * this point it seems safe to make the following assertion.
+			 * This flag may be written to by multiple backends during
+			 * PHJ_BATCH_PROBING phase, but will only be read in PHJ_BATCH_SCAN
+			 * phase so requires no extra locking.
 			 */
-			Assert(BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_DONE);
+			batch->skip_unmatched = true;
+		}
+
+		/*
+		 * Even if we aren't doing a full/right outer join, we'll step through
+		 * the PHJ_BATCH_SCAN phase just to maintain the invariant that
+		 * freeing happens in PHJ_BATCH_FREE, but that'll be wait-free.
+		 */
+		if (BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_PROBING &&
+			!hashtable->parallel_state->phs_lasj_has_null /* CBDB_PARALLEL */)
+			attached = BarrierArriveAndDetachExceptLast(&batch->batch_barrier);
+		if (attached && !hashtable->parallel_state->phs_lasj_has_null /* CBDB_PARALLEL */ &&
+			BarrierArriveAndDetach(&batch->batch_barrier))
+		{
+			/*
+			 * We are not longer attached to the batch barrier, but we're the
+			 * process that was chosen to free resources and it's safe to
+			 * assert the current phase.  The ParallelHashJoinBatch can't go
+			 * away underneath us while we are attached to the build barrier,
+			 * making this access safe.
+			 */
+			Assert(BarrierPhase(&batch->batch_barrier) == PHJ_BATCH_FREE);
 
 			/* Free shared chunks and buckets. */
 			while (DsaPointerIsValid(batch->chunks))
@@ -3895,9 +4076,18 @@ ExecHashTableDetachBatch(HashJoinTable hashtable)
 void
 ExecHashTableDetach(HashJoinTable hashtable)
 {
-	if (hashtable->parallel_state)
+	ParallelHashJoinState *pstate = hashtable->parallel_state;
+
+	/*
+	 * If we're involved in a parallel query, we must either have gotten all
+	 * the way to PHJ_BUILD_RUNNING, or joined too late and be in
+	 * PHJ_BUILD_DONE.
+	 */
+	Assert(!pstate ||
+		   BarrierPhase(&pstate->build_barrier) >= PHJ_BUILD_RUNNING);
+
+	if (pstate && BarrierPhase(&pstate->build_barrier) == PHJ_BUILD_RUNNING)
 	{
-		ParallelHashJoinState *pstate = hashtable->parallel_state;
 		int			i;
 
 		/* Make sure any temporary files are closed. */
@@ -3913,17 +4103,22 @@ ExecHashTableDetach(HashJoinTable hashtable)
 		}
 
 		/* If we're last to detach, clean up shared memory. */
-		if (BarrierDetach(&pstate->build_barrier))
+		if (BarrierArriveAndDetach(&pstate->build_barrier))
 		{
+			/*
+			 * Late joining processes will see this state and give up
+			 * immediately.
+			 */
+			Assert(BarrierPhase(&pstate->build_barrier) == PHJ_BUILD_DONE);
+
 			if (DsaPointerIsValid(pstate->batches))
 			{
 				dsa_free(hashtable->area, pstate->batches);
 				pstate->batches = InvalidDsaPointer;
 			}
 		}
-
-		hashtable->parallel_state = NULL;
 	}
+	hashtable->parallel_state = NULL;
 }
 
 /*

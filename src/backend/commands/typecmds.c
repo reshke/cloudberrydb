@@ -1570,6 +1570,13 @@ DefineRange(CreateRangeStmt *stmt)
 			/* we can look up the subtype name immediately */
 			multirangeNamespace = QualifiedNameGetCreationNamespace(defGetQualifiedName(defel),
 																	&multirangeTypeName);
+
+			/* Check we have creation rights in target namespace */
+			aclresult = pg_namespace_aclcheck(multirangeNamespace,
+											  GetUserId(), ACL_CREATE);
+			if (aclresult != ACLCHECK_OK)
+				aclcheck_error(aclresult, OBJECT_SCHEMA,
+							   get_namespace_name(multirangeNamespace));
 		}
 		else
 			ereport(ERROR,
@@ -1589,6 +1596,10 @@ DefineRange(CreateRangeStmt *stmt)
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("range subtype cannot be %s",
 						format_type_be(rangeSubtype))));
+
+	aclresult = pg_type_aclcheck(rangeSubtype, GetUserId(), ACL_USAGE);
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error_type(aclresult, rangeSubtype);
 
 	/* Identify subopclass */
 	rangeSubOpclass = findRangeSubOpclass(rangeSubOpclassName, rangeSubtype);

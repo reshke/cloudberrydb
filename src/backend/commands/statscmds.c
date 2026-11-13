@@ -65,7 +65,7 @@ compare_int16(const void *a, const void *b)
  *		CREATE STATISTICS
  */
 ObjectAddress
-CreateStatistics(CreateStatsStmt *stmt)
+CreateStatistics(CreateStatsStmt *stmt, bool check_rights)
 {
 	int16		attnums[STATS_MAX_DIMENSIONS];
 	int			nattnums = 0;
@@ -178,6 +178,20 @@ CreateStatistics(CreateStatsStmt *stmt)
 											  namespaceId);
 	}
 	namestrcpy(&stxname, namestr);
+
+	/*
+	 * Check we have creation rights in target namespace.  Skip check if
+	 * caller doesn't want it.
+	 */
+	if (check_rights)
+	{
+		AclResult	aclresult;
+
+		aclresult = pg_namespace_aclcheck(namespaceId, GetUserId(), ACL_CREATE);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error(aclresult, OBJECT_SCHEMA,
+						   get_namespace_name(namespaceId));
+	}
 
 	/*
 	 * Deal with the possibility that the statistics object already exists.
@@ -741,20 +755,14 @@ AlterStatistics(AlterStatsStmt *stmt)
 }
 
 /*
- * Guts of statistics object deletion.
- */
-void
-RemoveStatisticsById(Oid statsOid)
+ * Delete entry in pg_statistic_ext_data catalog.
+*/
+static void
+RemoveStatisticsDataById(Oid statsOid)
 {
 	Relation	relation;
 	HeapTuple	tup;
-	Form_pg_statistic_ext statext;
-	Oid			relid;
 
-	/*
-	 * First delete the pg_statistic_ext_data tuple holding the actual
-	 * statistical data.
-	 */
 	relation = table_open(StatisticExtDataRelationId, RowExclusiveLock);
 
 	tup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(statsOid));
@@ -767,6 +775,19 @@ RemoveStatisticsById(Oid statsOid)
 	ReleaseSysCache(tup);
 
 	table_close(relation, RowExclusiveLock);
+}
+
+/*
+ * Guts of statistics object deletion.
+ */
+void
+RemoveStatisticsById(Oid statsOid)
+{
+	Relation	relation;
+	Relation	rel;
+	HeapTuple	tup;
+	Form_pg_statistic_ext statext;
+	Oid			relid;
 
 	/*
 	 * Delete the pg_statistic_ext tuple.  Also send out a cache inval on the
@@ -782,11 +803,23 @@ RemoveStatisticsById(Oid statsOid)
 	statext = (Form_pg_statistic_ext) GETSTRUCT(tup);
 	relid = statext->stxrelid;
 
+	/*
+	 * Delete the pg_statistic_ext_data tuple holding the actual statistical
+	 * data. We lock the user table first, to prevent other processes (e.g.
+	 * DROP STATISTICS) from removing the row concurrently.
+	 */
+	rel = table_open(relid, ShareUpdateExclusiveLock);
+
+	RemoveStatisticsDataById(statsOid);
+
 	CacheInvalidateRelcacheByRelid(relid);
 
 	CatalogTupleDelete(relation, &tup->t_self);
 
 	ReleaseSysCache(tup);
+
+	/* Keep lock until the end of the transaction. */
+	table_close(rel, NoLock);
 
 	table_close(relation, RowExclusiveLock);
 }

@@ -2478,8 +2478,7 @@ array_set_element(Datum arraydatum,
 	{
 		bits8	   *newnullbitmap = ARR_NULLBITMAP(newarray);
 
-		/* Zero the bitmap to take care of marking inserted positions null */
-		MemSet(newnullbitmap, 0, (newnitems + 7) / 8);
+		/* palloc0 above already marked any inserted positions as nulls */
 		/* Fix the inserted value */
 		if (addedafter)
 			array_set_isnull(newnullbitmap, newnitems - 1, isNull);
@@ -3127,8 +3126,7 @@ array_set_slice(Datum arraydatum,
 			bits8	   *newnullbitmap = ARR_NULLBITMAP(newarray);
 			bits8	   *oldnullbitmap = ARR_NULLBITMAP(array);
 
-			/* Zero the bitmap to handle marking inserted positions null */
-			MemSet(newnullbitmap, 0, (nitems + 7) / 8);
+			/* palloc0 above already marked any inserted positions as nulls */
 			array_bitmap_copy(newnullbitmap, addedbefore,
 							  oldnullbitmap, 0,
 							  itemsbefore);
@@ -5445,6 +5443,7 @@ accumArrayResultArr(ArrayBuildStateArr *astate,
 				ndatabytes;
 	char	   *data;
 	int			i;
+	int			newnitems;
 
 	/*
 	 * We disallow accumulating null subarrays.  Another plausible definition
@@ -5473,6 +5472,14 @@ accumArrayResultArr(ArrayBuildStateArr *astate,
 	data = ARR_DATA_PTR(arg);
 	nitems = ArrayGetNItems(ndims, dims);
 	ndatabytes = ARR_SIZE(arg) - ARR_DATA_OFFSET(arg);
+
+	/* Check that the array doesn't grow too large */
+	newnitems = astate->nitems + nitems;
+	if (newnitems > MaxArraySize)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("array size exceeds the maximum allowed (%zu)",
+						MaxArraySize)));
 
 	if (astate->ndims == 0)
 	{
@@ -5539,8 +5546,6 @@ accumArrayResultArr(ArrayBuildStateArr *astate,
 	/* Deal with null bitmap if needed */
 	if (astate->nullbitmap || ARR_HASNULL(arg))
 	{
-		int			newnitems = astate->nitems + nitems;
-
 		if (astate->nullbitmap == NULL)
 		{
 			/*
@@ -5564,7 +5569,7 @@ accumArrayResultArr(ArrayBuildStateArr *astate,
 						  nitems);
 	}
 
-	astate->nitems += nitems;
+	astate->nitems = newnitems;
 	astate->dims[0] += 1;
 
 	MemoryContextSwitchTo(oldcontext);

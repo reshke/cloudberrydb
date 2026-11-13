@@ -318,6 +318,82 @@ sub connstr
 
 =pod
 
+=item $node->raw_connect()
+
+Open a raw TCP or Unix domain socket connection to the server. This is
+used by low-level protocol and connection limit tests.
+
+=cut
+
+sub raw_connect
+{
+	my ($self) = @_;
+	my $pgport = $self->port;
+	my $pghost = $self->host;
+
+	my $socket;
+	if ($PostgreSQL::Test::Utils::use_unix_sockets)
+	{
+		require IO::Socket::UNIX;
+		my $path = "$pghost/.s.PGSQL.$pgport";
+
+		$socket = IO::Socket::UNIX->new(
+			Type => SOCK_STREAM(),
+			Peer => $path,
+		) or die "Cannot create socket - $IO::Socket::errstr\n";
+	}
+	else
+	{
+		$socket = IO::Socket::INET->new(
+			PeerHost => $pghost,
+			PeerPort => $pgport,
+			Proto => 'tcp'
+		) or die "Cannot create socket - $IO::Socket::errstr\n";
+	}
+	return $socket;
+}
+
+=pod
+
+=item $node->raw_connect_works()
+
+Check if raw_connect() function works on this platform. This should
+be called to SKIP any tests that require raw_connect().
+
+This tries to connect to the server, to test whether it works or not,,
+so the server is up and running. Otherwise this can return 0 even if
+there's nothing wrong with raw_connect() itself.
+
+Notably, raw_connect() does not work on Unix domain sockets on
+Strawberry perl 5.26.3.1 on Windows, which we use in Cirrus CI images
+as of this writing. It dies with "not implemented on this
+architecture".
+
+=cut
+
+sub raw_connect_works
+{
+	my ($self) = @_;
+
+	# If we're using Unix domain sockets, we need a working
+	# IO::Socket::UNIX implementation.
+	if ($PostgreSQL::Test::Utils::use_unix_sockets)
+	{
+		eval {
+			my $sock = $self->raw_connect();
+			$sock->close();
+		};
+		if ($@ =~ /not implemented/)
+		{
+			diag "IO::Socket::UNIX does not work: $@";
+			return 0;
+		}
+	}
+	return 1;
+}
+
+=pod
+
 =item $node->group_access()
 
 Does the data dir allow group access?
@@ -632,7 +708,7 @@ sub adjust_conf
 
     my $conffile = $self->data_dir . '/' . $filename;
 
-    my $contents = PostgreSQL::Test::Utils::slurp_file($conffile);
+    my $contents = TestLib::slurp_file($conffile);
     my @lines    = split(/\n/, $contents);
     my @result;
     my $eq = $skip_equals ? '' : '= ';
@@ -1220,7 +1296,7 @@ sub enable_archiving
 	my $copy_command =
 	  $TestLib::windows_os
 	  ? qq{copy "%p" "$path\\\\%f"}
-	  : qq{cp "%p" "$path/%f"};
+	  : qq{install -m 644 "%p" "$path/%f"};
 
 	# Enable archive_mode and archive_command on node
 	$self->append_conf(
@@ -2366,15 +2442,9 @@ If this regular expression is set, matches it with the output generated.
 
 =item log_like => [ qr/required message/ ]
 
-If given, it must be an array reference containing a list of regular
-expressions that must match against the server log, using
-C<Test::More::like()>.
-
 =item log_unlike => [ qr/prohibited message/ ]
 
-If given, it must be an array reference containing a list of regular
-expressions that must NOT match against the server log.  They will be
-passed to C<Test::More::unlike()>.
+See C<log_check(...)>.
 
 =back
 
@@ -2395,16 +2465,6 @@ sub connect_ok
 		$sql = "SELECT \$\$connected with $connstr\$\$";
 	}
 
-	my (@log_like, @log_unlike);
-	if (defined($params{log_like}))
-	{
-		@log_like = @{ $params{log_like} };
-	}
-	if (defined($params{log_unlike}))
-	{
-		@log_unlike = @{ $params{log_unlike} };
-	}
-
 	my $log_location = -s $self->logfile;
 
 	# Never prompt for a password, any callers of this routine should
@@ -2422,19 +2482,7 @@ sub connect_ok
 	{
 		like($stdout, $params{expected_stdout}, "$test_name: matches");
 	}
-	if (@log_like or @log_unlike)
-	{
-		my $log_contents = TestLib::slurp_file($self->logfile, $log_location);
-
-		while (my $regex = shift @log_like)
-		{
-			like($log_contents, $regex, "$test_name: log matches");
-		}
-		while (my $regex = shift @log_unlike)
-		{
-			unlike($log_contents, $regex, "$test_name: log does not match");
-		}
-	}
+	$self->log_check($test_name, $log_location, %params);
 }
 
 =pod
@@ -2454,7 +2502,7 @@ If this regular expression is set, matches it with the output generated.
 
 =item log_unlike => [ qr/prohibited message/ ]
 
-See C<connect_ok(...)>, above.
+See C<log_check(...)>.
 
 =back
 
@@ -2464,16 +2512,6 @@ sub connect_fails
 {
 	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my ($self, $connstr, $test_name, %params) = @_;
-
-	my (@log_like, @log_unlike);
-	if (defined($params{log_like}))
-	{
-		@log_like = @{ $params{log_like} };
-	}
-	if (defined($params{log_unlike}))
-	{
-		@log_unlike = @{ $params{log_unlike} };
-	}
 
 	my $log_location = -s $self->logfile;
 
@@ -2492,19 +2530,7 @@ sub connect_fails
 		like($stderr, $params{expected_stderr}, "$test_name: matches");
 	}
 
-	if (@log_like or @log_unlike)
-	{
-		my $log_contents = TestLib::slurp_file($self->logfile, $log_location);
-
-		while (my $regex = shift @log_like)
-		{
-			like($log_contents, $regex, "$test_name: log matches");
-		}
-		while (my $regex = shift @log_unlike)
-		{
-			unlike($log_contents, $regex, "$test_name: log does not match");
-		}
-	}
+	$self->log_check($test_name, $log_location, %params);
 }
 
 =pod
@@ -2673,6 +2699,83 @@ sub issues_sql_like
 	my $log = TestLib::slurp_file($self->logfile, $log_location);
 	like($log, $expected_sql, "$test_name: SQL found in server log");
 	return;
+}
+
+=pod
+
+=item $node->log_check($offset, $test_name, %parameters)
+
+Check contents of server logs.
+
+=over
+
+=item $test_name
+
+Name of test for error messages.
+
+=item $offset
+
+Offset of the log file.
+
+=item log_like => [ qr/required message/ ]
+
+If given, it must be an array reference containing a list of regular
+expressions that must match against the server log, using
+C<Test::More::like()>.
+
+=item log_unlike => [ qr/prohibited message/ ]
+
+If given, it must be an array reference containing a list of regular
+expressions that must NOT match against the server log.  They will be
+passed to C<Test::More::unlike()>.
+
+=back
+
+=cut
+
+sub log_check
+{
+	my ($self, $test_name, $offset, %params) = @_;
+
+	my (@log_like, @log_unlike);
+	if (defined($params{log_like}))
+	{
+		@log_like = @{ $params{log_like} };
+	}
+	if (defined($params{log_unlike}))
+	{
+		@log_unlike = @{ $params{log_unlike} };
+	}
+
+	if (@log_like or @log_unlike)
+	{
+		my $log_contents = TestLib::slurp_file($self->logfile, $offset);
+
+		while (my $regex = shift @log_like)
+		{
+			like($log_contents, $regex, "$test_name: log matches");
+		}
+		while (my $regex = shift @log_unlike)
+		{
+			unlike($log_contents, $regex, "$test_name: log does not match");
+		}
+	}
+}
+
+=pod
+
+=item log_contains(pattern, offset)
+
+Find pattern in logfile of node after offset byte.
+
+=cut
+
+sub log_contains
+{
+	my ($self, $pattern, $offset) = @_;
+
+	return TestLib::slurp_file($self->logfile, $offset) =~
+	  m/$pattern/;
 }
 
 =pod

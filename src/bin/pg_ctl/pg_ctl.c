@@ -466,6 +466,10 @@ start_postmaster(void)
 	fflush(stdout);
 	fflush(stderr);
 
+#ifdef EXEC_BACKEND
+	pg_disable_aslr();
+#endif
+
 	pm_pid = fork();
 	if (pm_pid < 0)
 	{
@@ -606,12 +610,12 @@ start_postmaster(void)
 		else
 			close(fd);
 
-		cmd = psprintf("\"%s\" /C \"\"%s\" %s%s%s < \"%s\" >> \"%s\" 2>&1\"",
+		cmd = psprintf("\"%s\" /D /C \"\"%s\" %s%s%s < \"%s\" >> \"%s\" 2>&1\"",
 					   comspec, exec_path, pgdata_opt, post_opts,
 					   term_fd_opt ? term_fd_opt : "", DEVNULL, log_file);
 	}
 	else
-		cmd = psprintf("\"%s\" /C \"\"%s\" %s%s%s < \"%s\" 2>&1\"",
+		cmd = psprintf("\"%s\" /D /C \"\"%s\" %s%s%s < \"%s\" 2>&1\"",
 					   comspec, exec_path, pgdata_opt, post_opts,
 					   term_fd_opt ? term_fd_opt : "", DEVNULL);
 

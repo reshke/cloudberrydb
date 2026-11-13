@@ -64,6 +64,7 @@
 #include "partitioning/partdesc.h"
 #include "rewrite/rewriteManip.h"
 #include "storage/dsm_impl.h"
+#include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
@@ -120,12 +121,7 @@ create_upper_paths_hook_type create_upper_paths_hook = NULL;
 #define EXPRKIND_TABLEFUNC_LATERAL	12
 #define EXPRKIND_WINDOW_BOUND		13
 
-/* Passthrough data for standard_qp_callback */
-typedef struct
-{
-	List	   *activeWindows;	/* active windows, if any */
-	List	   *groupClause;	/* overrides parse->groupClause */
-} standard_qp_extra;
+/* standard_qp_extra is defined in optimizer/planner.h */
 
 /*
  * Data specific to grouping sets
@@ -332,6 +328,27 @@ planner(Query *parse, const char *query_string, int cursorOptions,
 
 	optimizer_options = palloc(sizeof(OptimizerOptions));
 	optimizer_options->create_vectorization_plan = false;
+
+	/*
+	 * Set parallel plan creation based on PostgreSQL planner's parallel safety checks.
+	 * This synchronizes with the same conditions used in standard_planner().
+	 */
+	if ((cursorOptions & CURSOR_OPT_PARALLEL_OK) != 0 &&
+		IsUnderPostmaster &&
+		parse->commandType == CMD_SELECT &&
+		!parse->hasModifyingCTE &&
+		max_parallel_workers_per_gather > 0 &&
+		!IsParallelWorker())
+	{
+		/* All cheap tests pass, check query tree for parallel safety */
+		char maxParallelHazard = max_parallel_hazard(parse);
+		optimizer_options->create_parallel_plan = (maxParallelHazard != PROPARALLEL_UNSAFE);
+	}
+	else
+	{
+		/* Skip the query tree scan, assume unsafe */
+		optimizer_options->create_parallel_plan = false;
+	}
 	if (planner_hook)
 	{
 		if (gp_log_optimization_time)
@@ -486,11 +503,13 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	 * functions are present in the query tree.
 	 *
 	 * (Note that we do allow CREATE TABLE AS, SELECT INTO, and CREATE
-	 * MATERIALIZED VIEW to use parallel plans, but as of now, only the leader
-	 * backend writes into a completely new table.  In the future, we can
-	 * extend it to allow workers to write into the table.  However, to allow
-	 * parallel updates and deletes, we have to solve other problems,
-	 * especially around combo CIDs.)
+	 * MATERIALIZED VIEW to use parallel plans, but this is safe only because
+	 * the command is writing into a completely new table which workers won't
+	 * be able to see.  If the workers could see the table, the fact that
+	 * group locking would cause them to ignore the leader's heavyweight
+	 * GIN page locks would make this unsafe.  We'll have to fix that somehow
+	 * if we want to allow parallel inserts in general; updates and deletes
+	 * have additional problems especially around combo CIDs.)
 	 *
 	 * For now, we don't try to use parallel mode if we're running inside a
 	 * parallel worker.  We might eventually be able to relax this
@@ -953,6 +972,17 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	root->is_correlated_subplan = false;
 
 	/*
+	 * Save a copy of the raw parse tree for AQUMV join exact-match.
+	 * This must be done before any preprocessing modifies the parse tree.
+	 */
+	if (Gp_role == GP_ROLE_DISPATCH &&
+		enable_answer_query_using_materialized_views &&
+		parent_root == NULL)
+		root->aqumv_raw_parse = copyObject(parse);
+	else
+		root->aqumv_raw_parse = NULL;
+
+	/*
 	 * If there is a WITH list, process each WITH query and either convert it
 	 * to RTE_SUBQUERY RTE(s) or build an initplan SubPlan structure for it.
 	 *
@@ -1099,6 +1129,35 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 		if (!rte->inh)
 			root->leaf_result_relids =
 				bms_make_singleton(parse->resultRelation);
+	}
+
+	/*
+	 * This would be a convenient time to check access permissions for all
+	 * relations mentioned in the query, since it would be better to fail now,
+	 * before doing any detailed planning.  However, for historical reasons,
+	 * we leave this to be done at executor startup.
+	 *
+	 * Note, however, that we do need to check access permissions for any view
+	 * relations mentioned in the query, in order to prevent information being
+	 * leaked by selectivity estimation functions, which only check view owner
+	 * permissions on underlying tables (see all_rows_selectable() and its
+	 * callers).  This is a little ugly, because it means that access
+	 * permissions for views will be checked twice, which is another reason
+	 * why it would be better to do all the ACL checks here.
+	 */
+	foreach(l, parse->rtable)
+	{
+		RangeTblEntry *rte = lfirst_node(RangeTblEntry, l);
+
+		if (rte->relkind == RELKIND_VIEW)
+		{
+			bool		result;
+
+			result = ExecCheckRTEPerms(rte);
+			if (!result)
+				aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_VIEW,
+							   get_rel_name(rte->relid));
+		}
 	}
 
 	/*
@@ -1935,6 +1994,13 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 
 			/* Do the real work. */
 			current_rel = answer_query_using_materialized_views(root, aqumv_context);
+
+			/* Try join AQUMV if single-table didn't rewrite. */
+			if (current_rel == aqumv_context->current_rel)
+			{
+				current_rel = answer_query_using_materialized_views_for_join(root, aqumv_context);
+			}
+
 			/* parse tree may be rewriten. */
 			parse = root->parse;
 		}
@@ -2397,6 +2463,9 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 														   parse->resultRelation);
 				int			resultRelation = -1;
 
+				/* Pass the root result rel forward to the executor. */
+				rootRelation = parse->resultRelation;
+
 				/* Add only leaf children to ModifyTable. */
 				while ((resultRelation = bms_next_member(root->leaf_result_relids,
 														 resultRelation)) >= 0)
@@ -2481,6 +2550,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			else
 			{
 				/* Single-relation INSERT/UPDATE/DELETE. */
+				rootRelation = 0;	/* there's no separate root rel */
 				resultRelations = list_make1_int(parse->resultRelation);
 				if (parse->commandType == CMD_UPDATE)
 					updateColnosLists = list_make1(root->update_colnos);
@@ -2489,16 +2559,6 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				if (parse->returningList)
 					returningLists = list_make1(parse->returningList);
 			}
-
-			/*
-			 * If target is a partition root table, we need to mark the
-			 * ModifyTable node appropriately for that.
-			 */
-			if (rt_fetch(parse->resultRelation, parse->rtable)->relkind ==
-				RELKIND_PARTITIONED_TABLE)
-				rootRelation = parse->resultRelation;
-			else
-				rootRelation = 0;
 
 			/*
 			 * If there was a FOR [KEY] UPDATE/SHARE clause, the LockRows node

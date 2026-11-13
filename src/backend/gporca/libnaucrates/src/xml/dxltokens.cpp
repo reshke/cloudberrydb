@@ -112,6 +112,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenPhysical, GPOS_WSZ_LIT("OpPhysical")},
 
 		{EdxltokenPhysicalTableScan, GPOS_WSZ_LIT("TableScan")},
+		{EdxltokenPhysicalParallelTableScan, GPOS_WSZ_LIT("ParallelTableScan")},
 		{EdxltokenPhysicalBitmapTableScan, GPOS_WSZ_LIT("BitmapTableScan")},
 		{EdxltokenPhysicalDynamicBitmapTableScan,
 		 GPOS_WSZ_LIT("DynamicBitmapTableScan")},
@@ -420,6 +421,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenColNdvBySeg, GPOS_WSZ_LIT("NdvBySeg")},
 
 		{EdxltokenParamId, GPOS_WSZ_LIT("ParamId")},
+		{EdxltokenParallelWorkers, GPOS_WSZ_LIT("ParallelWorkers")},
 
 		{EdxltokenCtidColName, GPOS_WSZ_LIT("ctid")},
 		{EdxltokenOidColName, GPOS_WSZ_LIT("oid")},
@@ -711,6 +713,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		 GPOS_WSZ_LIT("IntermediateResultType")},
 		{EdxltokenGPDBAggSplittable, GPOS_WSZ_LIT("IsSplittable")},
 		{EdxltokenGPDBAggHashAggCapable, GPOS_WSZ_LIT("HashAggCapable")},
+		{EdxltokenGPDBAggFinalFuncVolatile, GPOS_WSZ_LIT("FinalFuncVolatile")},
 
 		{EdxltokenGPDBCast, GPOS_WSZ_LIT("MDCast")},
 		{EdxltokenGPDBCastBinaryCoercible, GPOS_WSZ_LIT("BinaryCoercible")},

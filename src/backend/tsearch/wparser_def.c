@@ -18,6 +18,7 @@
 
 #include "catalog/pg_collation.h"
 #include "commands/defrem.h"
+#include "miscadmin.h"
 #include "tsearch/ts_locale.h"
 #include "tsearch/ts_public.h"
 #include "tsearch/ts_type.h"
@@ -632,6 +633,12 @@ p_ishost(TParser *prs)
 
 	tmpprs->wanthost = true;
 
+	/*
+	 * Check stack depth before recursing.  (Since TParserGet() doesn't
+	 * normally recurse, we put the cost of checking here not there.)
+	 */
+	check_stack_depth();
+
 	if (TParserGet(tmpprs) && tmpprs->type == HOST)
 	{
 		prs->state->posbyte += tmpprs->lenbytetoken;
@@ -654,6 +661,12 @@ p_isURLPath(TParser *prs)
 
 	tmpprs->state = newTParserPosition(tmpprs->state);
 	tmpprs->state->state = TPS_InURLPathFirst;
+
+	/*
+	 * Check stack depth before recursing.  (Since TParserGet() doesn't
+	 * normally recurse, we put the cost of checking here not there.)
+	 */
+	check_stack_depth();
 
 	if (TParserGet(tmpprs) && tmpprs->type == URLPATH)
 	{
@@ -1698,6 +1711,8 @@ TParserGet(TParser *prs)
 {
 	const TParserStateActionItem *item = NULL;
 
+	CHECK_FOR_INTERRUPTS();
+
 	Assert(prs->state);
 
 	if (prs->state->posbyte >= prs->lenstr)
@@ -2039,6 +2054,9 @@ hlCover(HeadlineParsedText *prs, TSQuery query, int max_cover,
 				nextpmax;
 	hlCheck		ch;
 
+	if (query->size <= 0)
+		return false;			/* empty query matches nothing */
+
 	/*
 	 * We look for the earliest, shortest substring of prs->words that
 	 * satisfies the query.  Both the pmin and pmax indices must be words
@@ -2343,7 +2361,8 @@ mark_hl_fragments(HeadlineParsedText *prs, TSQuery query, bool highlightall,
 	/* show the first min_words words if we have not marked anything */
 	if (num_f <= 0)
 	{
-		startpos = endpos = curlen = 0;
+		startpos = curlen = 0;
+		endpos = -1;
 		for (i = 0; i < prs->curwords && curlen < min_words; i++)
 		{
 			if (!NONWORDTOKEN(prs->words[i].type))
@@ -2498,7 +2517,7 @@ mark_hl_words(HeadlineParsedText *prs, TSQuery query, bool highlightall,
 		if (bestlen < 0)
 		{
 			curlen = 0;
-			pose = 0;
+			pose = -1;
 			for (i = 0; i < prs->curwords && curlen < min_words; i++)
 			{
 				if (!NONWORDTOKEN(prs->words[i].type))
@@ -2537,6 +2556,9 @@ prsd_headline(PG_FUNCTION_ARGS)
 	bool		highlightall = false;
 	int			max_cover;
 	ListCell   *l;
+	size_t		startsellen;
+	size_t		stopsellen;
+	size_t		fragdelimlen;
 
 	/* Extract configuration option values */
 	prs->startsel = NULL;
@@ -2622,9 +2644,24 @@ prsd_headline(PG_FUNCTION_ARGS)
 		prs->fragdelim = pstrdup(" ... ");
 
 	/* Caller will need these lengths, too */
-	prs->startsellen = strlen(prs->startsel);
-	prs->stopsellen = strlen(prs->stopsel);
-	prs->fragdelimlen = strlen(prs->fragdelim);
+	startsellen = strlen(prs->startsel);
+	stopsellen = strlen(prs->stopsel);
+	fragdelimlen = strlen(prs->fragdelim);
+	if (startsellen > PG_INT16_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("value for \"%s\" is too long", "StartSel")));
+	if (stopsellen > PG_INT16_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("value for \"%s\" is too long", "StopSel")));
+	if (fragdelimlen > PG_INT16_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("value for \"%s\" is too long", "FragmentDelimiter")));
+	prs->startsellen = startsellen;
+	prs->stopsellen = stopsellen;
+	prs->fragdelimlen = fragdelimlen;
 
 	PG_RETURN_POINTER(prs);
 }

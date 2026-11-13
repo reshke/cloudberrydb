@@ -269,6 +269,9 @@ public:
 	// check if given expression has a count(*)/count(Any) agg
 	static BOOL FHasCountAgg(CExpression *pexpr, CColRef **ppcrCount);
 
+	// check for an aggregate with an empty grouping set in a logical tree
+	static BOOL FHasScalarAgg(CExpression *pexpr);
+
 	// check if given expression has count matching the given column, returns the Logical GroupBy Agg above
 	static BOOL FHasCountAggMatchingColumn(const CExpression *pexpr,
 										   const CColRef *colref,
@@ -973,7 +976,8 @@ public:
 	// return true if given expression contains window aggregate function
 	static BOOL FHasAggWindowFunc(CExpression *pexpr);
 
-	// return true if given expression contains ordered aggregate function
+	// return true if given expression contains an ordered aggregate function
+	// that should be split to an internal gp_percentile aggregate
 	static BOOL FHasOrderedAggToSplit(CExpression *pexpr);
 
 	// return true if the given expression is a cross join
@@ -1025,6 +1029,9 @@ public:
 
 	static CTableDescriptorHashSet *RemoveDuplicateMdids(
 		CMemoryPool *mp, CTableDescriptorHashSet *tabdescs);
+
+	static BOOL FHasCrossSliceReplicatedCTEConsumer(CMemoryPool *mp,
+													CExpression *pexpr);
 
 	static CExpression *ReplaceColrefWithProjectExpr(CMemoryPool *mp,
 													 CExpression *pexpr,

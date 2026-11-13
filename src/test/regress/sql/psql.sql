@@ -119,6 +119,14 @@ SELECT 1 AS x, 'Hello', 2 AS y, true AS "dirty\name"
 -- all on one line
 SELECT 3 AS x, 'Hello', 4 AS y, true AS "dirty\name" \gdesc \g
 
+-- test for server bug #17983 with empty statement in aborted transaction
+set search_path = default;
+begin;
+bogus;
+;
+\gdesc
+rollback;
+
 -- \gexec
 
 create temporary table gexec_test(a int, b text, c date, d float);
@@ -987,6 +995,7 @@ select \if false \\ (bogus \else \\ 42 \endif \\ forty_two;
 	\pset arg1 arg2
 	\q
 	\reset
+	\restrict test
 	\s arg1
 	\set arg1 arg2 arg3 arg4 arg5 arg6 arg7
 	\setenv arg1 arg2
@@ -995,6 +1004,7 @@ select \if false \\ (bogus \else \\ 42 \endif \\ forty_two;
 	\t arg1
 	\T arg1
 	\timing arg1
+	\unrestrict not_valid
 	\unset arg1
 	\w arg1
 	\watch arg1
@@ -1007,6 +1017,17 @@ select \if false \\ (bogus \else \\ 42 \endif \\ forty_two;
 \else
 	\echo 'should print #8-1'
 \endif
+
+-- test that begin/end matching ignores to-be-ignored text
+create function silly_function(int) returns int
+begin atomic select $1;
+\if false
+end
+\endif
+;
+end;
+\sf silly_function(int)
+drop function silly_function(int);
 
 -- :{?...} defined variable test
 \set i 1

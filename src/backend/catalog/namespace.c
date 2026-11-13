@@ -1378,7 +1378,7 @@ MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
 	Oid		   *p_argtypes;
 	char	  **p_argnames;
 	char	   *p_argmodes;
-	bool		arggiven[FUNC_MAX_ARGS];
+	bool	   *arggiven;
 	bool		isnull;
 	int			ap;				/* call args position */
 	int			pp;				/* proargs position */
@@ -1402,8 +1402,8 @@ MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
 	Assert(include_out_arguments ? (pronargs == pronallargs) : (pronargs <= pronallargs));
 
 	/* initialize state for matching */
-	*argnumbers = (int *) palloc(pronargs * sizeof(int));
-	memset(arggiven, false, pronargs * sizeof(bool));
+	*argnumbers = palloc_array(int, pronargs);
+	arggiven = palloc0_array(bool, pronallargs);
 
 	/* there are numposargs positional args before the named args */
 	for (ap = 0; ap < numposargs; ap++)
@@ -4777,9 +4777,13 @@ InitializeSearchPath(void)
 	{
 		/*
 		 * In normal mode, arrange for a callback on any syscache invalidation
-		 * of pg_namespace rows.
+		 * of pg_namespace or pg_authid rows. (Changing a role name may affect
+		 * the meaning of the special string $user.)
 		 */
 		CacheRegisterSyscacheCallback(NAMESPACEOID,
+									  NamespaceCallback,
+									  (Datum) 0);
+		CacheRegisterSyscacheCallback(AUTHOID,
 									  NamespaceCallback,
 									  (Datum) 0);
 		/* Force search path to be recomputed on next use */

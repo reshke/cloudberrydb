@@ -154,6 +154,7 @@ bool		enable_parallel_dedup_semi_join = true;
 bool		enable_parallel_dedup_semi_reverse_join = true;
 bool		parallel_query_use_streaming_hashagg = false;
 bool		gp_use_streaming_hashagg = true;
+bool		optimizer_use_streaming_hashagg = true;
 int			gp_appendonly_insert_files = 0;
 int			gp_appendonly_insert_files_tuples_range = 0;
 int			gp_random_insert_segments = 0;
@@ -169,7 +170,7 @@ bool		Debug_datumstream_block_read_check_integrity = false;
 bool		Debug_datumstream_block_write_check_integrity = false;
 bool		Debug_datumstream_read_print_varlena_info = false;
 bool		Debug_datumstream_write_use_small_initial_buffers = false;
-bool		gp_create_table_random_default_distribution = true;
+bool		gp_create_table_random_default_distribution = false;
 bool		gp_allow_non_uniform_partitioning_ddl = true;
 bool		gp_print_create_gang_time = false;
 int			dtx_phase2_retry_second = 0;
@@ -1906,6 +1907,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_use_streaming_hashagg,
+		true, NULL, NULL
+	},
+
+	{
+		{"optimizer_use_streaming_hashagg", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Use streaming hash agg in ORCA-generated local partial hash aggregations."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_use_streaming_hashagg,
 		true, NULL, NULL
 	},
 
@@ -4936,7 +4947,7 @@ struct config_string ConfigureNamesString_gp[] =
 	{
 		{"gp_resource_manager", PGC_POSTMASTER, RESOURCES,
 			gettext_noop("Sets the type of resource manager."),
-			gettext_noop("Only support \"queue\" and \"group\" for now.")
+			gettext_noop("Only support \"queue\", \"group\" and \"group-v2\" for now.")
 		},
 		&gp_resource_manager_str,
 		"queue",

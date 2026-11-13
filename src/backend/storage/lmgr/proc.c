@@ -475,12 +475,13 @@ InitProcess(void)
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
-	MyProc->delayChkpt = 0;
+	MyProc->delayChkpt = false;
+	MyProc->delayChkptEnd = false;
 	MyProc->statusFlags = 0;
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */
 	if (IsAutoVacuumWorkerProcess())
 		MyProc->statusFlags |= PROC_IS_AUTOVACUUM;
-	MyProc->lwWaiting = false;
+	MyProc->lwWaiting = LW_WS_NOT_WAITING;
 	MyProc->lwWaitMode = 0;
 	MyProc->waitLock = NULL;
 	MyProc->waitProcLock = NULL;
@@ -742,9 +743,10 @@ InitAuxiliaryProcess(void)
     MyProc->mppIsWriter = false;
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
-	MyProc->delayChkpt = 0;
+	MyProc->delayChkpt = false;
+	MyProc->delayChkptEnd = false;
 	MyProc->statusFlags = 0;
-	MyProc->lwWaiting = false;
+	MyProc->lwWaiting = LW_WS_NOT_WAITING;
 	MyProc->lwWaitMode = 0;
 	MyProc->waitLock = NULL;
 	MyProc->waitProcLock = NULL;
@@ -894,10 +896,26 @@ LockErrorCleanup(void)
 		return;
 	}
 
-	/* Don't try to cancel resource locks.*/
+	/*
+	 * Resource queue locks are not handled by the regular lock wait cleanup
+	 * below.  Cancel the wait with ResLockWaitCancel() instead, before abort
+	 * processing gets a chance to release any portal of this backend.
+	 *
+	 * This matters when we are terminated while waiting inside a
+	 * subtransaction: CleanupSubTransaction() drops the waiting portal, and
+	 * since the portal already has an increment, PortalDrop() releases its
+	 * resource queue lock.  That frees the LOCALLOCK and PROCLOCK while
+	 * lockAwaited and MyProc->waitProcLock still point to them, and the
+	 * top-level ResLockWaitCancel() would later operate on a freed (and
+	 * possibly reused) PROCLOCK.
+	 *
+	 * If the lock was granted just before we got here, ResLockWaitCancel()
+	 * leaves the grant alone, and it is released through the portal.
+	 */
 	if ((Gp_role == GP_ROLE_DISPATCH || IS_SINGLENODE()) && IsResQueueEnabled() &&
 		LOCALLOCK_LOCKMETHOD(*lockAwaited) == RESOURCE_LOCKMETHOD)
 	{
+		ResLockWaitCancel();
 		RESUME_INTERRUPTS();
 		return;
 	}
@@ -1333,12 +1351,12 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	/*
 	 * If group locking is in use, locks held by members of my locking group
 	 * need to be included in myHeldLocks.  This is not required for relation
-	 * extension or page locks which conflict among group members. However,
-	 * including them in myHeldLocks will give group members the priority to
-	 * get those locks as compared to other backends which are also trying to
-	 * acquire those locks.  OTOH, we can avoid giving priority to group
-	 * members for that kind of locks, but there doesn't appear to be a clear
-	 * advantage of the same.
+	 * extension lock which conflict among group members. However, including
+	 * them in myHeldLocks will give group members the priority to get those
+	 * locks as compared to other backends which are also trying to acquire
+	 * those locks.  OTOH, we can avoid giving priority to group members for
+	 * that kind of locks, but there doesn't appear to be a clear advantage of
+	 * the same.
 	 */
 	if (leader != NULL)
 	{

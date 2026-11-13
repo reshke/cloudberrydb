@@ -353,6 +353,12 @@ explain (costs off)
   select v.c, (select count(*) from gstest2 group by () having v.c)
     from (values (false),(true)) v(c) order by v.c;
 
+-- HAVING with constant-false predicate on an empty grouping set must emit
+-- zero rows, not the default scalar-aggregate row.
+select count(*) from gstest2 group by grouping sets (()) having false;
+explain (costs off)
+  select count(*) from gstest2 group by grouping sets (()) having false;
+
 -- HAVING with GROUPING queries
 select ten, grouping(ten) from onek
 group by grouping sets(ten) having grouping(ten) >= 0
@@ -716,5 +722,15 @@ group by rollup (a) order by a;
 select a, b, rank(b) within group (order by b nulls last)
 from (values (1,1),(1,4),(1,5),(3,1),(3,2)) v(a,b)
 group by rollup (a,b) order by a;
+
+-- ORCA: rollup over a derived-expression group alias with a target-list SRF.
+select generate_series(1, a) g, a+b ab
+  from (values (1,1),(2,2)) t(a,b)
+  group by rollup(a, ab) order by 1,2;
+
+-- Same shape with cube(): exercises additional grouping-set combinations.
+select generate_series(1, a) g, a+b ab
+  from (values (1,1),(2,2)) t(a,b)
+  group by cube(a, ab) order by 1,2;
 
 -- end

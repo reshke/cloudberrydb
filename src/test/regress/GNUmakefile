@@ -63,6 +63,7 @@ $(top_builddir)/src/port/pg_config_paths.h: | submake-libpgport
 install: all installdirs
 	$(INSTALL_PROGRAM) pg_regress$(X) '$(DESTDIR)$(pgxsdir)/$(subdir)/pg_regress$(X)'
 	$(INSTALL_PROGRAM) regress.so '$(DESTDIR)$(pkglibdir)/regress.so'
+	$(INSTALL_PROGRAM) regress.so '$(DESTDIR)$(pkglibdir)/refint.so'
 	$(INSTALL_PROGRAM) gpdiff.pl '$(DESTDIR)$(pgxsdir)/$(subdir)/gpdiff.pl'
 	$(INSTALL_PROGRAM) gpstringsubs.pl '$(DESTDIR)$(pgxsdir)/$(subdir)/gpstringsubs.pl'
 	$(INSTALL_PROGRAM) atmsort.pl '$(DESTDIR)$(pgxsdir)/$(subdir)/atmsort.pl'
@@ -79,6 +80,7 @@ installdirs:
 
 uninstall:
 	rm -f '$(DESTDIR)$(pkglibdir)/regress.so'
+	rm -f '$(DESTDIR)$(pkglibdir)/refint.so'
 	rm -f '$(DESTDIR)$(pgxsdir)/$(subdir)/pg_regress$(X)'
 	rm -f '$(DESTDIR)$(pgxsdir)/$(subdir)/gpdiff.pl'
 	rm -f '$(DESTDIR)$(pgxsdir)/$(subdir)/gpstringsubs.pl'
@@ -221,6 +223,12 @@ installcheck-cbdb-parallel: all tablespace-setup twophase_pqexecparams
 	( \
 	export PGOPTIONS='-c optimizer=off -c enable_parallel=true -c min_parallel_table_scan_size=0 -c min_parallel_index_scan_size=0 -c force_parallel_mode=1'; \
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule --schedule=$(srcdir)/greenplum_schedule --max-connections=5 $(EXTRA_TESTS) --exclude-tests explain \
+	)
+
+installcheck-orca-parallel: all tablespace-setup twophase_pqexecparams
+	( \
+	export PGOPTIONS='-c optimizer=on -c enable_parallel=true -c min_parallel_table_scan_size=0 -c min_parallel_index_scan_size=0 -c parallel_setup_cost=0'; \
+	$(pg_regress_installcheck) $(REGRESS_OPTS) --exclude-file=$(srcdir)/excluded_tests.conf --schedule=$(srcdir)/parallel_schedule --schedule=$(srcdir)/greenplum_schedule --max-connections=4 --ignore-plans $(EXTRA_TESTS) \
 	)
 
 installcheck-tests: all

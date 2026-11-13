@@ -237,6 +237,17 @@ SELECT 3 AS x, 'Hello', 4 AS y, true AS "dirty\name" \gdesc \g
  3 | Hello    | 4 | t
 (1 row)
 
+-- test for server bug #17983 with empty statement in aborted transaction
+set search_path = default;
+begin;
+bogus;
+ERROR:  syntax error at or near "bogus"
+LINE 1: bogus;
+        ^
+;
+\gdesc
+The command has no result, or the result has no columns.
+rollback;
 -- \gexec
 create temporary table gexec_test(a int, b text, c date, d float);
 select format('create index on gexec_test(%I)', attname)
@@ -4581,6 +4592,7 @@ invalid command \lo
 	\pset arg1 arg2
 	\q
 	\reset
+	\restrict test
 	\s arg1
 	\set arg1 arg2 arg3 arg4 arg5 arg6 arg7
 	\setenv arg1 arg2
@@ -4589,6 +4601,7 @@ invalid command \lo
 	\t arg1
 	\T arg1
 	\timing arg1
+	\unrestrict not_valid
 	\unset arg1
 	\w arg1
 	\watch arg1
@@ -4602,6 +4615,22 @@ invalid command \lo
 	\echo 'should print #8-1'
 should print #8-1
 \endif
+-- test that begin/end matching ignores to-be-ignored text
+create function silly_function(int) returns int
+begin atomic select $1;
+\if false
+end
+\endif
+;
+end;
+\sf silly_function(int)
+CREATE OR REPLACE FUNCTION public.silly_function(integer)
+ RETURNS integer
+ LANGUAGE sql
+BEGIN ATOMIC
+ SELECT $1;
+END
+drop function silly_function(int);
 -- :{?...} defined variable test
 \set i 1
 \if :{?i}

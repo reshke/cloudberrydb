@@ -163,9 +163,7 @@ sub installcheck_internal
 		"--bindir=../../../$Config/psql",
 		"--schedule=${schedule}_schedule",
 		"--max-concurrent-tests=20",
-		"--make-testtablespace-dir",
-		"--encoding=SQL_ASCII",
-		"--no-locale");
+		"--make-testtablespace-dir");
 	push(@args, $maxconn) if $maxconn;
 	push(@args, @EXTRA_REGRESS_OPTS);
 	system(@args);
@@ -458,13 +456,15 @@ sub plcheck
 		# Move on if no tests are listed.
 		next if (scalar @tests == 0);
 
+		my @opts = fetchRegressOpts();
+
 		print
 		  "============================================================\n";
 		print "Checking $lang\n";
 		my @args = (
 			"$topdir/$Config/pg_regress/pg_regress",
 			"--bindir=$topdir/$Config/psql",
-			"--dbname=pl_regression", @lang_args, @tests);
+			"--dbname=pl_regression", @lang_args, @opts, @tests);
 		system(@args);
 		my $status = $? >> 8;
 		exit $status if $status;
@@ -684,7 +684,7 @@ sub upgradecheck
 	# now we can chdir into the source dir
 	chdir "$topdir/src/bin/pg_upgrade";
 	print "\nDumping old cluster\n\n";
-	@args = ('pg_dumpall', '-f', "$tmp_root/dump1.sql");
+	@args = ('pg_dumpall', '-f', "$tmp_root/dump1.sql", '--restrict-key', 'test');
 	system(@args) == 0 or exit 1;
 	print "\nStopping old cluster\n\n";
 	system("pg_ctl stop") == 0 or exit 1;
@@ -698,7 +698,7 @@ sub upgradecheck
 	@args = ('pg_ctl', '-l', "$logdir/postmaster2.log", 'start');
 	system(@args) == 0 or exit 1;
 	print "\nDumping new cluster\n\n";
-	@args = ('pg_dumpall', '-f', "$tmp_root/dump2.sql");
+	@args = ('pg_dumpall', '-f', "$tmp_root/dump2.sql", '--restrict-key', 'test');
 	system(@args) == 0 or exit 1;
 	print "\nStopping new cluster\n\n";
 	system("pg_ctl stop") == 0 or exit 1;

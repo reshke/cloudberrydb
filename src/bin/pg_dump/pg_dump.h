@@ -88,8 +88,13 @@ typedef enum
 	DO_SUBSCRIPTION
 } DumpableObjectType;
 
-/* component types of an object which can be selected for dumping */
-typedef uint32 DumpComponents;	/* a bitmask of dump object components */
+/*
+ * DumpComponents is a bitmask of the potentially dumpable components of
+ * a database object: its core definition, plus optional attributes such
+ * as ACL, comments, etc.  The NONE and ALL symbols are convenient
+ * shorthands.
+ */
+typedef uint32 DumpComponents;
 #define DUMP_COMPONENT_NONE			(0)
 #define DUMP_COMPONENT_DEFINITION	(1 << 0)
 #define DUMP_COMPONENT_DATA			(1 << 1)
@@ -134,8 +139,9 @@ typedef struct _dumpableObject
 	DumpId		dumpId;			/* assigned by AssignDumpId() */
 	char	   *name;			/* object name (should never be NULL) */
 	struct _namespaceInfo *namespace;	/* containing namespace, or NULL */
-	DumpComponents dump;		/* bitmask of components to dump */
+	DumpComponents dump;		/* bitmask of components requested to dump */
 	DumpComponents dump_contains;	/* as above, but for contained objects */
+	DumpComponents components;	/* bitmask of components available to dump */
 	bool		ext_member;		/* true if object is member of extension */
 	bool		depends_on_ext; /* true if object depends on an extension */
 	DumpId	   *dependencies;	/* dumpIds of objects this one depends on */
@@ -148,14 +154,34 @@ typedef struct _binaryupgradeinfo
 	DumpableObject dobj;
 } BinaryUpgradeInfo;
 
+/*
+ * Object types that have ACLs must store them in a DumpableAcl sub-struct,
+ * which must immediately follow the DumpableObject base struct.
+ *
+ * Note: when dumping from a pre-9.2 server, which lacks the acldefault()
+ * function, acldefault will be NULL or empty.
+ */
+typedef struct _dumpableAcl
+{
+	char	   *acl;			/* the object's actual ACL string */
+	char	   *acldefault;		/* default ACL for the object's type & owner */
+	/* these fields come from the object's pg_init_privs entry, if any: */
+	char		privtype;		/* entry type, 'i' or 'e'; 0 if no entry */
+	char	   *initprivs;		/* the object's initial ACL string, or NULL */
+} DumpableAcl;
+
+/* Generic struct that can be used to access any object type having an ACL */
+typedef struct _dumpableObjectWithAcl
+{
+	DumpableObject dobj;
+	DumpableAcl dacl;
+} DumpableObjectWithAcl;
 typedef struct _namespaceInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;		/* name of owner, or empty string */
-	char	   *nspacl;
-	char	   *rnspacl;
-	char	   *initnspacl;
-	char	   *initrnspacl;
+	DumpableAcl dacl;
+	Oid			nspowner;		/* OID of owner */
+	const char *rolname;		/* name of owner */
 } NamespaceInfo;
 
 typedef struct _extensionInfo
@@ -171,6 +197,7 @@ typedef struct _extensionInfo
 typedef struct _typeInfo
 {
 	DumpableObject dobj;
+	DumpableAcl dacl;
 
 	/*
 	 * Note: dobj.name is the raw pg_type.typname entry.  ftypname is the
@@ -178,7 +205,7 @@ typedef struct _typeInfo
 	 * schema-qualified too.
 	 */
 	char		*ftypname;
-	char		*rolname;		/* name of owner, or empty string */
+	const char	*rolname;		/* name of owner, or empty string */
 	char		*typacl;
 	char		*rtypacl;
 	char		*inittypacl;
@@ -209,7 +236,8 @@ typedef struct _shellTypeInfo
 typedef struct _funcInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;		/* name of owner, or empty string */
+	DumpableAcl dacl;
+	const char *rolname;
 	Oid			lang;
 	int			nargs;
 	Oid		   *argtypes;
@@ -218,6 +246,7 @@ typedef struct _funcInfo
 	char	   *rproacl;
 	char	   *initproacl;
 	char	   *initrproacl;
+	bool		postponed_def;	/* function must be postponed into post-data */
 } FuncInfo;
 
 /* AggInfo is a superset of FuncInfo */
@@ -230,13 +259,11 @@ typedef struct _aggInfo
 typedef struct _ptcInfo
 {
 	DumpableObject dobj;
+	DumpableAcl dacl;
 	char	   *ptcreadfn;
 	char	   *ptcwritefn;
-	char	   *ptcowner;
+	const char *rolname;
 	char	   *ptcacl;
-	char	   *rproacl;
-	char	   *initproacl;
-	char	   *initrproacl;
 	bool	   ptctrusted;
 	Oid		   ptcreadid;
 	Oid		   ptcwriteid;
@@ -246,7 +273,7 @@ typedef struct _ptcInfo
 typedef struct _oprInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 	char		oprkind;
 	Oid			oprcode;
 } OprInfo;
@@ -261,25 +288,25 @@ typedef struct _accessMethodInfo
 typedef struct _opclassInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 } OpclassInfo;
 
 typedef struct _opfamilyInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 } OpfamilyInfo;
 
 typedef struct _collInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 } CollInfo;
 
 typedef struct _convInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 } ConvInfo;
 
 typedef struct _tableInfo
@@ -288,11 +315,8 @@ typedef struct _tableInfo
 	 * These fields are collected for every table in the database.
 	 */
 	DumpableObject dobj;
-	char	   *rolname;		/* name of owner, or empty string */
-	char	   *relacl;
-	char	   *rrelacl;
-	char	   *initrelacl;
-	char	   *initrrelacl;
+	DumpableAcl dacl;
+	const char *rolname;
 	char		relkind;
 	char		relstorage;
 	char		relpersistence; /* relation persistence */
@@ -305,6 +329,7 @@ typedef struct _tableInfo
 	bool		hasindex;		/* does it have any indexes? */
 	bool		hasrules;		/* does it have any rules? */
 	bool		hastriggers;	/* does it have any triggers? */
+	bool		hascolumnACLs;	/* do any columns have non-default ACLs? */
 	bool		rowsec;			/* is row security enabled? */
 	bool		forcerowsec;	/* is row security forced? */
 	bool		hasoids;		/* does it have OIDs? */
@@ -314,7 +339,8 @@ typedef struct _tableInfo
 	uint32		toast_frozenxid;	/* toast table's relfrozenxid, if any */
 	uint32		toast_minmxid;	/* toast table's relminmxid */
 	int			ncheck;			/* # of CHECK expressions */
-	char	   *reloftype;		/* underlying type for typed table */
+	Oid			reltype;		/* OID of table's composite type, if any */
+	Oid	   		reloftype;		/* underlying type for typed table */
 	Oid			foreign_server; /* foreign server oid, if applicable */
 	/* these two are set only if table is a sequence owned by a column: */
 	Oid			owning_tab;		/* OID of table owning sequence */
@@ -355,8 +381,6 @@ typedef struct _tableInfo
 	char	  **attencoding;	/* the attribute encoding values */
 	struct _attrDefInfo **attrdefs; /* DEFAULT expressions */
 	struct _constraintInfo *checkexprs; /* CHECK constraints */
-	char	   *partkeydef;		/* partition key definition */
-	char	   *partbound;		/* partition bound definition */
 	bool		needs_override; /* has GENERATED ALWAYS AS IDENTITY */
 	char	   *amname;			/* relation access method */
 	Oid			amoid;			/* relation access method oid */
@@ -366,15 +390,19 @@ typedef struct _tableInfo
 	 */
 	int			numParents;		/* number of (immediate) parent tables */
 	struct _tableInfo **parents;	/* TableInfos of immediate parents */
-	Oid			parrelid;			/* external partition's parent oid */
+	Oid			parrelid;			/* partition's parent oid */
 	bool		parparent;		/* true if the table is partition parent */
 	int			numIndexes;		/* number of indexes */
 	struct _indxInfo *indexes;	/* indexes */
 	struct _tableDataInfo *dataObj; /* TableDataInfo, if dumping its data */
 	int			numTriggers;	/* number of triggers for table */
 	struct _triggerInfo *triggers;	/* array of TriggerInfo structs */
-	bool		isivm;		 	/* is incrementally maintainable materialized view? */
-	bool		isdynamic;		/* is dynamic table? */
+
+	/* GPDB */
+	bool	isivm;		 	/* is incrementally maintainable materialized view? */
+	bool	isdynamic;		/* is dynamic table? */
+	char	*partclause;	/* partition definition, if table is partition parent */
+	char	*parttemplate;	/* subpartition template */
 } TableInfo;
 
 typedef struct _tableAttachInfo
@@ -432,7 +460,8 @@ typedef struct _indexAttachInfo
 typedef struct _statsExtInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;		/* name of owner, or empty string */
+	const char  *rolname;		/* name of owner, or empty string */
+	TableInfo  *stattable;		/* link to table the stats are for */
 	int			stattarget;		/* statistics target */
 } StatsExtInfo;
 
@@ -471,7 +500,7 @@ typedef struct _evttriggerInfo
 	DumpableObject dobj;
 	char	   *evtname;
 	char	   *evtevent;
-	char	   *evtowner;
+	const char *evtowner;
 	char	   *evttags;
 	char	   *evtfname;
 	char		evtenabled;
@@ -503,15 +532,12 @@ typedef struct _constraintInfo
 typedef struct _procLangInfo
 {
 	DumpableObject dobj;
+	DumpableAcl dacl;
 	bool		lanpltrusted;
 	Oid			lanplcallfoid;
 	Oid			laninline;
 	Oid			lanvalidator;
-	char	   *lanacl;
-	char	   *rlanacl;
-	char	   *initlanacl;
-	char	   *initrlanacl;
-	char	   *lanowner;		/* name of owner, or empty string */
+	const char *lanowner;
 } ProcLangInfo;
 
 typedef struct _castInfo
@@ -553,7 +579,7 @@ typedef struct _prsInfo
 typedef struct _dictInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 	Oid			dicttemplate;
 	char	   *dictinitoption;
 } TSDictInfo;
@@ -568,56 +594,44 @@ typedef struct _tmplInfo
 typedef struct _cfgInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 	Oid			cfgparser;
 } TSConfigInfo;
 
 typedef struct _fdwInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	DumpableAcl dacl;
+	const char *rolname;
 	char	   *fdwhandler;
 	char	   *fdwvalidator;
 	char	   *fdwoptions;
-	char	   *fdwacl;
-	char	   *rfdwacl;
-	char	   *initfdwacl;
-	char	   *initrfdwacl;
 } FdwInfo;
 
 typedef struct _foreignServerInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	DumpableAcl dacl;
+	const char *rolname;
 	Oid			srvfdw;
 	char	   *srvtype;
 	char	   *srvversion;
-	char	   *srvacl;
-	char	   *rsrvacl;
-	char	   *initsrvacl;
-	char	   *initrsrvacl;
 	char	   *srvoptions;
 } ForeignServerInfo;
 
 typedef struct _defaultACLInfo
 {
 	DumpableObject dobj;
-	char	   *defaclrole;
+	DumpableAcl dacl;
+	const char *defaclrole;
 	char		defaclobjtype;
-	char	   *defaclacl;
-	char	   *rdefaclacl;
-	char	   *initdefaclacl;
-	char	   *initrdefaclacl;
 } DefaultACLInfo;
 
 typedef struct _blobInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
-	char	   *blobacl;
-	char	   *rblobacl;
-	char	   *initblobacl;
-	char	   *initrblobacl;
+	DumpableAcl dacl;
+	const char *rolname;
 } BlobInfo;
 
 /*
@@ -644,7 +658,7 @@ typedef struct _policyInfo
 typedef struct _PublicationInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 	bool		puballtables;
 	bool		pubinsert;
 	bool		pubupdate;
@@ -670,7 +684,7 @@ typedef struct _PublicationRelInfo
 typedef struct _SubscriptionInfo
 {
 	DumpableObject dobj;
-	char	   *rolname;
+	const char *rolname;
 	char	   *subconninfo;
 	char	   *subslotname;
 	char	   *subbinary;
@@ -766,8 +780,7 @@ extern void getSubscriptions(Archive *fout);
 /* START MPP ADDITION */
 extern ExtProtInfo *getExtProtocols(Archive *fout, int *numExtProtocols);
 extern BinaryUpgradeInfo *getBinaryUpgradeObjects(void);
-
-extern bool	testExtProtocolSupport(Archive *fout);
+extern void getPartitionDefs(Archive *fout, TableInfo tblinfo[], int numTables);
 /* END MPP ADDITION */
 
 #endif							/* PG_DUMP_H */

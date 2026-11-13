@@ -120,6 +120,7 @@
 #include "utils/timestamp.h"
 
 #include "access/appendonlywriter.h"
+#include "catalog/gp_distribution_policy.h"
 #include "catalog/heap.h"
 #include "catalog/pg_am.h"
 #include "cdb/cdbappendonlyam.h"
@@ -884,7 +885,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 
 			if (Gp_role == GP_ROLE_DISPATCH && GpPolicyIsPartitioned(onerel->rd_cdbpolicy))
 			{
-				stats->stadistinctbyseg = colNDVBySeg[i];
+				stats->stadistinctbyseg = colNDVBySeg[stats->attr->attnum - 1];
 			}
 
 			stats->tupDesc = onerel->rd_att;
@@ -1008,7 +1009,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 
 			if (Gp_role == GP_ROLE_EXECUTE) {
 				Assert(ctx->stadistincts);
-				ctx->stadistincts[i] = Float8GetDatum(stats->stadistinct);
+				ctx->stadistincts[stats->attr->attnum - 1] = Float8GetDatum(stats->stadistinct);
 			}
 
 			MemoryContextResetAndDeleteChildren(col_context);
@@ -2007,6 +2008,10 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	ListCell   *lc;
 	bool		has_child;
 
+	/* Initialize output parameters to zero now, in case we exit early */
+	*totalrows = 0;
+	*totaldeadrows = 0;
+
 	/*
 	 * Find all members of inheritance set.  We only need AccessShareLock on
 	 * the children.
@@ -2158,16 +2163,31 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	pgstat_progress_update_param(PROGRESS_ANALYZE_CHILD_TABLES_TOTAL,
 								 nrels);
 	numrows = 0;
-	*totalrows = 0;
-	*totaldeadrows = 0;
 	for (i = 0; i < nrels; i++)
 	{
 		Relation	childrel = rels[i];
 		AcquireSampleRowsFunc acquirefunc = acquirefuncs[i];
 		double		childblocks = relblocks[i];
 
-		pgstat_progress_update_param(PROGRESS_ANALYZE_CURRENT_CHILD_TABLE_RELID,
-									 RelationGetRelid(childrel));
+		/*
+		 * Report progress.  The sampling function will normally report blocks
+		 * done/total, but we need to reset them to 0 here, so that they don't
+		 * show an old value until that.
+		 */
+		{
+			const int	progress_index[] = {
+				PROGRESS_ANALYZE_CURRENT_CHILD_TABLE_RELID,
+				PROGRESS_ANALYZE_BLOCKS_DONE,
+				PROGRESS_ANALYZE_BLOCKS_TOTAL
+			};
+			const int64 progress_vals[] = {
+				RelationGetRelid(childrel),
+				0,
+				0,
+			};
+
+			pgstat_progress_update_multi_param(3, progress_index, progress_vals);
+		}
 
 		if (childblocks > 0)
 		{
@@ -4968,13 +4988,54 @@ merge_leaf_stats(VacAttrStatsP stats,
 		old_context = MemoryContextSwitchTo(stats->anl_context);
 		bool valid;
 		double ndinstinct_by_segs = 0;
+		double leaf_ndistinct_sum = 0;
 		Datum *ndvbs;
 
 		valid = aggregate_leaf_partition_ndvbs(
-			numPartitions, heaptupleStats, relTuples, &ndinstinct_by_segs);
+			numPartitions, heaptupleStats, relTuples, &ndinstinct_by_segs,
+			&leaf_ndistinct_sum);
 
 		if (valid)
 		{
+			/*
+			 * The leaves' values are summed, which is only right when leaves hold
+			 * disjoint values, e.g. for the partitioning key.  A value repeated in
+			 * every partition is counted once per partition, so the sum grows
+			 * with the number of partitions and ORCA overestimates the output of
+			 * a local aggregate.
+			 *
+			 * This statistic counts a distinct value once per segment holding
+			 * it, so it is the column's ndistinct times the average number of
+			 * segments a value sits on.  That average does not depend on the
+			 * partitioning, so take it from the leaves, where the sums are free
+			 * of the double counting, and apply it to the root's ndistinct.
+			 * For a partitioning key, whose values belong to one leaf each, the
+			 * result is the plain sum as before.
+			 *
+			 * The average is between one and the number of segments.  Keeping
+			 * the sum as an upper bound guards against the root's ndistinct and
+			 * the leaves' one disagreeing, as they are estimated separately.
+			 */
+			double		root_ndistinct = stats->stadistinct < 0 ?
+				-stats->stadistinct * totalTuples : stats->stadistinct;
+
+			if (root_ndistinct > 0)
+			{
+				GpPolicy   *policy = GpPolicyFetch(stats->attr->attrelid);
+				int			numsegments = policy->numsegments > 0 ?
+					policy->numsegments : getgpsegmentCount();
+				double		segs_per_value;
+
+				pfree(policy);
+
+				segs_per_value = leaf_ndistinct_sum > 0 ?
+					ndinstinct_by_segs / leaf_ndistinct_sum : numsegments;
+				segs_per_value = Min(Max(segs_per_value, 1.0), numsegments);
+
+				ndinstinct_by_segs = Min(ndinstinct_by_segs,
+										 root_ndistinct * segs_per_value);
+			}
+
 			ndvbs = (Datum *) palloc(sizeof(Datum));
 			ndvbs[0] = Float8GetDatum(ndinstinct_by_segs);
 

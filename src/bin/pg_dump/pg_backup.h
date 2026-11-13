@@ -26,6 +26,14 @@
 #include "fe_utils/simple_list.h"
 #include "libpq-fe.h"
 
+#define GPDB5_MAJOR_PGVERSION 80300
+#define GPDB6_MAJOR_PGVERSION 90400
+#define GPDB7_MAJOR_PGVERSION 120000
+/* 
+ * GPDB7_MERGE_FIXME: it seems like we don't need those cuz for cbdb we have 
+ * fout->version.type and fout->version.version, which provide better checks
+ */
+#define CBDB2_MAJOR_PGVERSION 140000
 
 typedef enum trivalue
 {
@@ -57,6 +65,23 @@ typedef enum _teSection
 	SECTION_DATA,				/* TABLE DATA, BLOBS, BLOB COMMENTS */
 	SECTION_POST_DATA			/* stuff to be processed after data */
 } teSection;
+
+/* We need one enum entry per prepared query in pg_dump */
+enum _dumpPreparedQueries
+{
+	PREPQUERY_DUMPAGG,
+	PREPQUERY_DUMPBASETYPE,
+	PREPQUERY_DUMPCOMPOSITETYPE,
+	PREPQUERY_DUMPDOMAIN,
+	PREPQUERY_DUMPENUMTYPE,
+	PREPQUERY_DUMPFUNC,
+	PREPQUERY_DUMPOPR,
+	PREPQUERY_DUMPRANGETYPE,
+	PREPQUERY_DUMPTABLEATTACH,
+	PREPQUERY_GETCOLUMNACLS,
+	PREPQUERY_GETDOMAINCONSTRAINTS,
+	NUM_PREP_QUERIES			/* must be last */
+};
 
 /* Parameters needed by ConnectDatabase; same for dump and restore */
 typedef struct _connParams
@@ -136,6 +161,8 @@ typedef struct _restoreOptions
 	int			enable_row_security;
 	int			sequence_data;	/* dump sequence data even in schema-only mode */
 	int			binary_upgrade;
+
+	char	   *restrict_key;
 } RestoreOptions;
 
 typedef struct _dumpOptions
@@ -182,6 +209,11 @@ typedef struct _dumpOptions
 
 	int			sequence_data;	/* dump sequence data even in schema-only mode */
 	int			do_nothing;
+
+	char	   *restrict_key;
+	/* GPDB */
+	bool		dumpGpPolicy;
+	bool		isGPbackend;
 } DumpOptions;
 
 
@@ -229,6 +261,9 @@ typedef struct Archive
 	int			n_errors;		/* number of errors (if no die) */
 
 	DatabaseVersion version;
+
+	/* prepared-query status */
+	bool	   *is_prepared;	/* indexed by enum _dumpPreparedQueries */
 
 	/* The rest is private */
 } Archive;

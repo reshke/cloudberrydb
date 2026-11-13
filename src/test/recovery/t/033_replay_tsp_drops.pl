@@ -113,7 +113,7 @@ my $tspoid = $node_standby->safe_psql('postgres',
 my $tspdir = $node_standby->data_dir . "/pg_tblspc/$tspoid";
 File::Path::rmtree($tspdir);
 
-my $logstart = get_log_size($node_standby);
+my $logstart = -s $node_standby->logfile;
 
 # Create a database in the tablespace and a table in default tablespace
 $node_primary->safe_psql(
@@ -132,34 +132,11 @@ while ($max_attempts-- >= 0)
 {
 	last
 	  if (
-		find_in_log(
-			$node_standby, "WARNING:  creating missing directory: pg_tblspc/",
+		$node_standby->log_contains(
+			qr!WARNING: ( [A-Z0-9]+:)? creating missing directory: pg_tblspc/!,
 			$logstart));
 	sleep 1;
 }
 ok($max_attempts > 0, "invalid directory creation is detected");
 
 done_testing();
-
-
-# return the size of logfile of $node in bytes
-sub get_log_size
-{
-	my ($node) = @_;
-
-	return (stat $node->logfile)[7];
-}
-
-# find $pat in logfile of $node after $off-th byte
-sub find_in_log
-{
-	my ($node, $pat, $off) = @_;
-
-	$off = 0 unless defined $off;
-	my $log = PostgreSQL::Test::Utils::slurp_file($node->logfile);
-	return 0 if (length($log) <= $off);
-
-	$log = substr($log, $off);
-
-	return $log =~ m/$pat/;
-}

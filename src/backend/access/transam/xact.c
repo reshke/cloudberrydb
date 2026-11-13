@@ -3036,13 +3036,15 @@ CommitTransaction(void)
 	DoPendingDbDeletes(true);
 
 	/*
-	 * Only QD holds the session level lock this long for a movedb operation.
-	 * This is to prevent another transaction from moving database objects into
-	 * the source database oid directory while it is being deleted. We don't
-	 * worry about aborts as we release session level locks automatically during
-	 * an abort as opposed to a commit.
+	 * Release the session level lock held for a movedb operation. This is to
+	 * prevent another transaction from moving database objects into the source
+	 * database oid directory while it is being deleted. We don't worry about
+	 * aborts as we release session level locks automatically during an abort
+	 * as opposed to a commit. We must also release in utility mode (e.g.
+	 * standalone backends used in TAP tests).
 	 */
-	if(Gp_role == GP_ROLE_DISPATCH || IS_SINGLENODE())
+	if (Gp_role == GP_ROLE_DISPATCH || Gp_role == GP_ROLE_UTILITY ||
+		IS_SINGLENODE())
 		MoveDbSessionLockRelease();
 
 	/*
@@ -3950,8 +3952,8 @@ CommitTransactionCommand(void)
 		elog(DEBUG1,"CommitTransactionCommand: called as segment Reader in state %s",
 		     BlockStateAsString(s->blockState));
 
-	if (s->chain)
-		SaveTransactionCharacteristics();
+	/* Must save in case we need to restore below */
+	SaveTransactionCharacteristics();
 
 	switch (s->blockState)
 	{
@@ -6442,6 +6444,7 @@ PushTransaction(void)
 	s->blockState = TBLOCK_SUBBEGIN;
 	GetUserIdAndSecContext(&s->prevUser, &s->prevSecContext);
 	s->prevXactReadOnly = XactReadOnly;
+	s->startedInRecovery = p->startedInRecovery;
 	s->parallelModeLevel = 0;
 	s->assigned = false;
 

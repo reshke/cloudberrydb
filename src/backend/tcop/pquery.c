@@ -127,6 +127,9 @@ CreateQueryDesc(PlannedStmt *plannedstmt,
 	if (Gp_role != GP_ROLE_EXECUTE)
 		increment_command_count();
 
+	/* null this field until set by GP Stats Collector */
+	qd->gpsc_query_key = NULL;
+
 	return qd;
 }
 
@@ -1220,8 +1223,8 @@ FillPortalStore(Portal portal, bool isTopLevel)
 									portal->holdStore,
 									portal->holdContext,
 									false,
-									NULL,
-									NULL);
+									portal->tupDesc,
+									gettext_noop("query result type does not match portal result type"));
 
 	switch (portal->strategy)
 	{

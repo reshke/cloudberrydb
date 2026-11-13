@@ -86,9 +86,11 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
+#include "utils/resgroup.h"
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+#include "utils/varlena.h"
 
 #include "cdb/cdbutil.h"
 #include "cdb/cdbvars.h"
@@ -151,6 +153,8 @@ cancel_pending_hook_type cancel_pending_hook = NULL;
  * Hook for query execution.
  */
 exec_simple_query_hook_type exec_simple_query_hook = NULL;
+/* flags for non-system relation kinds to restrict use */
+int			restrict_nonsystem_relation_kind;
 
 /* ----------------
  *		private typedefs etc
@@ -1609,10 +1613,29 @@ CheckDebugDtmActionSqlCommandTag(const char *sqlCommandTag)
 static void
 restore_guc_to_QE(void )
 {
-	Assert(Gp_role == GP_ROLE_DISPATCH && gp_guc_restore_list);
-	ListCell *lc;
+	ListCell 	*lc;
+	bool		saved_resgroup_bypass = gp_resource_group_bypass;
 
-	start_xact_command();
+	Assert(Gp_role == GP_ROLE_DISPATCH && gp_guc_restore_list);
+
+	/* debug_query_string (which is used to make a bypass decision) is
+	 * unavailable in this context meaning that we won't bypass resource
+	 * group here.
+	 * To forse the bypass we temporarily set gp_resource_group_bypass manually.
+	 *
+	 */
+	PG_TRY();
+	{
+		gp_resource_group_bypass = true;
+		start_xact_command();
+	}
+	PG_CATCH();
+	{
+		gp_resource_group_bypass = saved_resgroup_bypass;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	gp_resource_group_bypass = saved_resgroup_bypass;
 
 	foreach(lc, gp_guc_restore_list)
 	{
@@ -4360,6 +4383,8 @@ ProcessInterrupts(const char* filename, int lineno)
 	if (ParallelMessagePending)
 		HandleParallelMessages();
 
+	CheckAndHandleCustomSignals();
+
 	if (LogMemoryContextPending)
 		ProcessLogMemoryContextInterrupt();
 }
@@ -4558,6 +4583,66 @@ assign_max_stack_depth(int newval, void *extra)
 	max_stack_depth_bytes = newval_bytes;
 }
 
+/*
+ * GUC check_hook for restrict_nonsystem_relation_kind
+ */
+bool
+check_restrict_nonsystem_relation_kind(char **newval, void **extra, GucSource source)
+{
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+	int			flags = 0;
+
+	/* Need a modifiable copy of string */
+	rawstring = pstrdup(*newval);
+
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* syntax error in list */
+		GUC_check_errdetail("List syntax is invalid.");
+		pfree(rawstring);
+		list_free(elemlist);
+		return false;
+	}
+
+	foreach(l, elemlist)
+	{
+		char	   *tok = (char *) lfirst(l);
+
+		if (pg_strcasecmp(tok, "view") == 0)
+			flags |= RESTRICT_RELKIND_VIEW;
+		else if (pg_strcasecmp(tok, "foreign-table") == 0)
+			flags |= RESTRICT_RELKIND_FOREIGN_TABLE;
+		else
+		{
+			GUC_check_errdetail("Unrecognized key word: \"%s\".", tok);
+			pfree(rawstring);
+			list_free(elemlist);
+			return false;
+		}
+	}
+
+	pfree(rawstring);
+	list_free(elemlist);
+
+	/* Save the flags in *extra, for use by the assign function */
+	*extra = malloc(sizeof(int));
+	*((int *) *extra) = flags;
+
+	return true;
+}
+
+/*
+ * GUC assign_hook for restrict_nonsystem_relation_kind
+ */
+void
+assign_restrict_nonsystem_relation_kind(const char *newval, void *extra)
+{
+	int		   *flags = (int *) extra;
+
+	restrict_nonsystem_relation_kind = *flags;
+}
 
 /*
  * set_debug_options --- apply "-d N" command line option
@@ -4715,7 +4800,7 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 	 * postmaster/postmaster.c (the option sets should not conflict) and with
 	 * the common help() function in main/main.c.
 	 */
-	while ((flag = getopt(argc, argv, "B:bc:C:D:d:EeFf:h:ijk:lMm:N:nOPp:r:R:S:sTt:v:W:-:")) != -1)
+	while ((flag = getopt(argc, argv, "B:bc:C:D:d:EeFf:h:ijk:lMm:N:nOPp:r:R:S:sTt:v:W:Z-:")) != -1)
 	{
 		switch (flag)
 		{
@@ -4883,6 +4968,10 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 				SetConfigOption("post_auth_delay", optarg, ctx, gucsource);
 				break;
 
+			case 'Z':
+				/* ignored for consistency with the postmaster */
+				break;
+
 			case 'c':
 			case '-':
 				{
@@ -5008,12 +5097,12 @@ PostgresMain(int argc, char *argv[],
 			 const char *dbname,
 			 const char *username)
 {
-	int			firstchar;
-	StringInfoData input_message;
 	sigjmp_buf	local_sigjmp_buf;
+
+	/* these must be volatile to ensure state is preserved across longjmp: */
 	volatile bool send_ready_for_query = true;
-	bool		idle_in_transaction_timeout_enabled = false;
-	bool		idle_session_timeout_enabled = false;
+	volatile bool idle_in_transaction_timeout_enabled = false;
+	volatile bool idle_session_timeout_enabled = false;
 
 	/*
 	 * CDB: Catch program error signals.
@@ -5359,9 +5448,11 @@ PostgresMain(int argc, char *argv[],
 		 * query cancels from being misreported as timeouts in case we're
 		 * forgetting a timeout cancel.
 		 */
-		disable_all_timeouts(false);
-		QueryCancelPending = false; /* second to avoid race condition */
+		disable_all_timeouts(false);	/* do first to avoid race condition */
+		QueryCancelPending = false;
 		QueryFinishPending = false;
+		idle_in_transaction_timeout_enabled = false;
+		idle_session_timeout_enabled = false;
 
 		/* Not reading from the client anymore. */
 		DoingCommandRead = false;
@@ -5459,6 +5550,9 @@ PostgresMain(int argc, char *argv[],
 
 	for (;;)
 	{
+		int			firstchar;
+		StringInfoData input_message;
+
 		/*
 		 * At top of loop, reset extended-query-message flag, so that any
 		 * errors encountered in "idle" state don't provoke skip.

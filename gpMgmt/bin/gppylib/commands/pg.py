@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 #
-# Copyright (c) Greenplum Inc 2008. All Rights Reserved. 
+# Copyright (c) Greenplum Inc 2008. All Rights Reserved.
 #
 
+from contextlib import closing
 import os
-import pipes
+import shlex
 
 from gppylib.gplog import *
 from gppylib.gparray import *
+from gppylib.db import dbconn
 from .base import *
 from .unix import *
 from gppylib.commands.base import *
@@ -16,6 +18,30 @@ from gppylib.commands.gp import RECOVERY_REWIND_APPNAME
 logger = get_default_logger()
 
 GPHOME=os.environ.get('GPHOME')
+
+
+def ensure_replication_slot_exists(source_host, source_port,
+                                   replication_slot_name):
+    if not replication_slot_name:
+        return False
+
+    escaped_slot_name = replication_slot_name.replace("'", "''")
+    dburl = dbconn.DbURL(hostname=source_host, port=source_port,
+                         dbname='template1')
+    with closing(dbconn.connect(dburl, utility=True)) as conn:
+        slot_exists = dbconn.querySingleton(
+            conn,
+            "SELECT count(*) FROM pg_catalog.pg_replication_slots "
+            "WHERE slot_name = '{}'".format(escaped_slot_name))
+        if slot_exists > 0:
+            return False
+
+        dbconn.execSQL(
+            conn,
+            "SELECT pg_catalog.pg_create_physical_replication_slot('{}')"
+            .format(escaped_slot_name))
+
+    return True
 
 class DbStatus(Command):
     def __init__(self,name,db,ctxt=LOCAL,remoteHost=None):
@@ -200,7 +226,7 @@ class PgRewind(Command):
         # pg_rewind prints progress updates to stdout, but it also prints
         # errors relating to relevant failures(like it will not rewind due to
         # a corrupted pg_control file) to stderr.
-        rewind_cmd = rewind_cmd + " > {} 2>&1".format(pipes.quote(progress_file))
+        rewind_cmd = rewind_cmd + " > {} 2>&1".format(shlex.quote(progress_file))
         self.cmdStr = rewind_cmd
 
         Command.__init__(self, name, self.cmdStr, LOCAL)
@@ -257,7 +283,7 @@ class PgBaseBackup(Command):
         cmd_tokens.append('--verbose')
 
         if progress_file:
-            cmd_tokens.append('> %s 2>&1' % pipes.quote(progress_file))
+            cmd_tokens.append('> %s 2>&1' % shlex.quote(progress_file))
 
         cmd_str = ' '.join(cmd_tokens)
 

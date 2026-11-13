@@ -253,6 +253,7 @@ sub GenerateFiles
 		HAVE_DECL_STRNLEN                           => 1,
 		HAVE_DECL_STRTOLL                           => 1,
 		HAVE_DECL_STRTOULL                          => 1,
+		HAVE_DECL_TIMINGSAFE_BCMP                   => 0,
 		HAVE_DLOPEN                                 => undef,
 		HAVE_EDITLINE_HISTORY_H                     => undef,
 		HAVE_EDITLINE_READLINE_H                    => undef,
@@ -398,6 +399,7 @@ sub GenerateFiles
 		HAVE_SYS_EPOLL_H                         => undef,
 		HAVE_SYS_EVENT_H                         => undef,
 		HAVE_SYS_IPC_H                           => undef,
+		HAVE_SYS_PERSONALITY_H                   => undef,
 		HAVE_SYS_PRCTL_H                         => undef,
 		HAVE_SYS_PROCCTL_H                       => undef,
 		HAVE_SYS_PSTAT_H                         => undef,
@@ -414,6 +416,7 @@ sub GenerateFiles
 		HAVE_SYS_UIO_H                           => undef,
 		HAVE_SYS_UN_H                            => undef,
 		HAVE_TERMIOS_H                           => undef,
+		HAVE_TIMINGSAFE_BCMP                     => undef,
 		HAVE_TYPEOF                              => undef,
 		HAVE_UCRED_H                             => undef,
 		HAVE_UINT64                              => undef,
@@ -432,6 +435,7 @@ sub GenerateFiles
 		HAVE_WCTYPE_H                            => 1,
 		HAVE_WRITEV                              => undef,
 		HAVE_X509_GET_SIGNATURE_NID              => 1,
+		HAVE_X509_GET_SIGNATURE_INFO             => undef,
 		HAVE_X86_64_POPCNTQ                      => undef,
 		HAVE__BOOL                               => undef,
 		HAVE__BUILTIN_BSWAP16                    => undef,
@@ -547,7 +551,14 @@ sub GenerateFiles
 
 		my ($digit1, $digit2, $digit3) = $self->GetOpenSSLVersion();
 
-		# More symbols are needed with OpenSSL 1.1.0 and above.
+		# Symbols needed with OpenSSL 1.1.1 and above.
+		if (   ($digit1 >= '3' && $digit2 >= '0' && $digit3 >= '0')
+			|| ($digit1 >= '1' && $digit2 >= '1' && $digit3 >= '1'))
+		{
+			$define{HAVE_X509_GET_SIGNATURE_INFO} = 1;
+		}
+
+		# Symbols needed with OpenSSL 1.1.0 and above.
 		if (   ($digit1 >= '3' && $digit2 >= '0' && $digit3 >= '0')
 			|| ($digit1 >= '1' && $digit2 >= '1' && $digit3 >= '0'))
 		{

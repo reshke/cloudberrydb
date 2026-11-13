@@ -64,13 +64,15 @@ test: leastsquares opr_sanity_gp decode_expr bitmapscan bitmapscan_ao case_gp li
 # below test(s) inject faults so each of them need to be in a separate group
 test: gpcopy
 
-test: orca_static_pruning orca_groupingsets_fallbacks
+test: orca_static_pruning orca_groupingsets_fallbacks orca_count_in orca_aggregate_subqueries
+test: orca_volatile_aggregate
 test: filter gpctas gpdist gpdist_opclasses gpdist_legacy_opclasses matrix sublink table_functions olap_setup complex opclass_ddl information_schema guc_env_var gp_explain distributed_transactions explain_format olap_plans gp_copy_dtx
 # below test(s) inject faults so each of them need to be in a separate group
 test: guc_gp
 test: toast
 test: misc_jiras
 test: statement_mem_for_windowagg
+test: memquota_partitions
 test: write_gang_idle_in_transaction_session_timeout
 
 # namespace_gp test will show diff if concurrent tests use temporary tables.
@@ -167,6 +169,7 @@ test: instr_in_shmem_verify
 # hold locks.
 test: partition_locking
 test: vacuum_gp
+test: vacuum_fsm_nondefault_tablespace
 test: resource_queue_stat
 # background analyze may affect pgstat
 test: pg_stat
