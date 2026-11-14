@@ -821,3 +821,10 @@ with tcte(c1, c2, c3) as (
 )
 SELECT * FROM tcte WHERE c3 = 1;
 
+-- A set operation on the QD must gather only one copy of a replicated DML CTE.
+CREATE TABLE setop_replicated_dml(v int) DISTRIBUTED REPLICATED;
+CREATE FUNCTION setop_entry_values() RETURNS SETOF int AS 'SELECT 1' LANGUAGE SQL EXECUTE ON COORDINATOR;
+WITH ins AS (INSERT INTO setop_replicated_dml VALUES (1),(1) RETURNING v)
+SELECT v FROM ins EXCEPT ALL SELECT * FROM setop_entry_values();
+DROP FUNCTION setop_entry_values();
+DROP TABLE setop_replicated_dml;

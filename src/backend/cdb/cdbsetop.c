@@ -209,13 +209,19 @@ adjust_setop_arguments(PlannerInfo *root, List *pathlist, List *tlist_list, GpSe
 																   locus);
 						break;
 
+					case CdbLocusType_Replicated:
+						/* Gather one copy of the replicated input to the QD. */
+						CdbPathLocus_MakeEntry(&locus);
+						adjusted_path = cdbpath_create_motion_path(root, subpath, NULL, false,
+																   locus);
+						break;
+
 					case CdbLocusType_Entry:
 					case CdbLocusType_General:
 					case CdbLocusType_OuterQuery:
 						break;
 
 					case CdbLocusType_Null:
-					case CdbLocusType_Replicated:
 					case CdbLocusType_ReplicatedWorkers:
 					case CdbLocusType_End:
 						ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
