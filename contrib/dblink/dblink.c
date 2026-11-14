@@ -9,7 +9,7 @@
  * Shridhar Daithankar <shridhar_daithankar@persistent.co.in>
  *
  * contrib/dblink/dblink.c
- * Copyright (c) 2001-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2023, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * Permission to use, copy, modify, and distribute this software and its
@@ -48,6 +48,8 @@
 #include "funcapi.h"
 #include "lib/stringinfo.h"
 #include "libpq-fe.h"
+#include "libpq/libpq-be.h"
+#include "libpq/libpq-be-fe-helpers.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "parser/scansup.h"
@@ -59,6 +61,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/varlena.h"
+#include "utils/wait_event.h"
 
 PG_MODULE_MAGIC;
 
@@ -67,6 +70,22 @@ typedef struct remoteConn
 	PGconn	   *conn;			/* Hold the remote connection */
 	int			openCursorCount;	/* The number of open cursors */
 	bool		newXactForCursor;	/* Opened a transaction for a cursor */
+
+	/*
+	 * True while a dblink call is materializing a result read from this
+	 * connection. Converting a row runs the column types' input functions,
+	 * and a domain type runs its CHECK constraints there, so user-defined
+	 * code can execute during conversion. That code must not be able to close
+	 * the connection or start another operation on it. No other dblink
+	 * operation runs user-defined code while it holds a connection, so this
+	 * is the only window that needs protecting.
+	 *
+	 * Row conversion happens only under materializeResult() and
+	 * materializeQueryResult(), which set this themselves; everything else
+	 * just checks that the connection is not in use. A transient connection
+	 * has no remoteConn entry and needs none, since no SQL can name it.
+	 */
+	bool		materializingResult;
 } remoteConn;
 
 typedef struct storeInfo
@@ -87,15 +106,17 @@ typedef struct storeInfo
 static Datum dblink_record_internal(FunctionCallInfo fcinfo, bool is_async);
 static void prepTuplestoreResult(FunctionCallInfo fcinfo);
 static void materializeResult(FunctionCallInfo fcinfo, PGconn *conn,
-							  PGresult *res);
+							  remoteConn *rconn, PGresult *res);
 static void materializeQueryResult(FunctionCallInfo fcinfo,
 								   PGconn *conn,
+								   remoteConn *rconn,
 								   const char *conname,
 								   const char *sql,
 								   bool fail);
 static PGresult *storeQueryResult(volatile storeInfo *sinfo, PGconn *conn, const char *sql);
 static void storeRow(volatile storeInfo *sinfo, PGresult *res, bool first);
 static remoteConn *getConnectionByName(const char *name);
+static void dblink_check_conn_not_in_use(remoteConn *rconn, const char *conname);
 static HTAB *createConnHash(void);
 static void createNewConnection(const char *name, remoteConn *rconn);
 static void deleteConnection(const char *name);
@@ -109,12 +130,13 @@ static int	get_attnum_pk_pos(int *pkattnums, int pknumatts, int key);
 static HeapTuple get_tuple_of_interest(Relation rel, int *pkattnums, int pknumatts, char **src_pkattvals);
 static Relation get_rel_from_relname(text *relname_text, LOCKMODE lockmode, AclMode aclmode);
 static char *generate_relation_name(Relation rel);
-static char *dblink_connstr_check(const char *connstr);
-static void dblink_security_check(PGconn *conn, remoteConn *rconn);
+static char *dblink_connstr_check(char *connstr);
+static char *dblink_connstr_has_pw(const char *connstr);
+static void dblink_security_check(PGconn *conn, remoteConn *rconn, const char *connstr);
 static void dblink_res_error(PGconn *conn, const char *conname, PGresult *res,
 							 bool fail, const char *fmt,...) pg_attribute_printf(5, 6);
 static char *get_connect_string(const char *servername);
-static char *escape_param_str(const char *from);
+static char *escape_param_str(const char *str);
 static void validate_pkattnums(Relation rel,
 							   int2vector *pkattnums_arg, int32 pknumatts_arg,
 							   int **pkattnums, int *pknumatts);
@@ -157,8 +179,7 @@ dblink_res_internalerror(PGconn *conn, PGresult *res, const char *p2)
 {
 	char	   *msg = pchomp(PQerrorMessage(conn));
 
-	if (res)
-		PQclear(res);
+	PQclear(res);
 	elog(ERROR, "%s: %s", p2, msg);
 }
 
@@ -176,9 +197,31 @@ dblink_conn_not_avail(const char *conname)
 				 errmsg("connection not available")));
 }
 
+/*
+ * Raise an error if some dblink call is already reading results from this
+ * connection. Call this wherever we resolve a connection to operate on.
+ * remoteConn.materializingResult defines what counts as being in use.
+ */
+static void
+dblink_check_conn_not_in_use(remoteConn *rconn, const char *conname)
+{
+	if (rconn == NULL || !rconn->materializingResult)
+		return;
+
+	if (conname)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("connection \"%s\" is already in use", conname)));
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("connection is already in use")));
+}
+
 static void
 dblink_get_conn(char *conname_or_str,
-				PGconn *volatile *conn_p, char **conname_p, volatile bool *freeconn_p)
+				PGconn *volatile *conn_p, char **conname_p, volatile bool *freeconn_p,
+				remoteConn **rconn_p)
 {
 	remoteConn *rconn = getConnectionByName(conname_or_str);
 	PGconn	   *conn;
@@ -193,13 +236,12 @@ dblink_get_conn(char *conname_or_str,
 	}
 	else
 	{
-		const char *connstr;
+		char *connstr;
 
 		connstr = get_connect_string(conname_or_str);
 		if (connstr == NULL)
 			connstr = conname_or_str;
 		connstr = dblink_connstr_check(connstr);
-
 		/*
 		 * We must obey fd.c's limit on non-virtual file descriptors.  Assume
 		 * that a PGconn represents one long-lived FD.  (Doing this here also
@@ -222,21 +264,27 @@ dblink_get_conn(char *conname_or_str,
 #endif
 		}
 
+		/*
+		 * Final security check on the proxied connection options. Like
+		 * dblink_connect, this happens whether the current user is a
+		 * superuser or not.
+		 */
+		libpqsrv_check_proxy_conninfo(connstr);
+
 		/* OK to make connection */
-		conn = PQconnectdb(connstr);
+		conn = libpqsrv_connect(connstr, PG_WAIT_EXTENSION);
 
 		if (PQstatus(conn) == CONNECTION_BAD)
 		{
 			char	   *msg = pchomp(PQerrorMessage(conn));
 
-			PQfinish(conn);
-			ReleaseExternalFD();
+			libpqsrv_disconnect(conn);
 			ereport(ERROR,
 					(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
 					 errmsg("could not establish connection"),
 					 errdetail_internal("%s", msg)));
 		}
-		dblink_security_check(conn, rconn);
+		dblink_security_check(conn, rconn, connstr);
 		if (PQclientEncoding(conn) != GetDatabaseEncoding())
 			PQsetClientEncoding(conn, GetDatabaseEncodingName());
 		freeconn = true;
@@ -246,6 +294,7 @@ dblink_get_conn(char *conname_or_str,
 	*conn_p = conn;
 	*conname_p = conname;
 	*freeconn_p = freeconn;
+	*rconn_p = rconn;
 }
 
 static PGconn *
@@ -254,7 +303,10 @@ dblink_get_named_conn(const char *conname)
 	remoteConn *rconn = getConnectionByName(conname);
 
 	if (rconn)
+	{
+		dblink_check_conn_not_in_use(rconn, conname);
 		return rconn->conn;
+	}
 
 	dblink_conn_not_avail(conname);
 	return NULL;				/* keep compiler quiet */
@@ -269,6 +321,7 @@ dblink_init(void)
 		pconn->conn = NULL;
 		pconn->openCursorCount = 0;
 		pconn->newXactForCursor = false;
+		pconn->materializingResult = false;
 	}
 }
 
@@ -335,14 +388,34 @@ dblink_connect(PG_FUNCTION_ARGS)
 #endif
 	}
 
+	/*
+	 * Opening an unnamed connection closes the one we already have further
+	 * down, so it had better not be in use. Check before connecting, so that
+	 * we don't have to throw away a connection we just made. A named
+	 * connection can't get here with a live PGconn, since
+	 * createNewConnection() rejects the duplicate name above.
+	 */
+	if (!connname && pconn->conn)
+		dblink_check_conn_not_in_use(pconn, NULL);
+
+	/*
+	 * Final security check on the proxied connection options.
+	 *
+	 * NB: Validation happens regardless of whether the current user is a
+	 * superuser, because dblink_connect_u is implemented as a SECURITY
+	 * DEFINER function, and it's only documented to grant an exception for
+	 * the dblink_security_check. We don't really want to expand that set of
+	 * privileges arbitrarily.
+	 */
+	libpqsrv_check_proxy_conninfo(connstr);
+
 	/* OK to make connection */
-	conn = PQconnectdb(connstr);
+	conn = libpqsrv_connect(connstr, PG_WAIT_EXTENSION);
 
 	if (PQstatus(conn) == CONNECTION_BAD)
 	{
 		msg = pchomp(PQerrorMessage(conn));
-		PQfinish(conn);
-		ReleaseExternalFD();
+		libpqsrv_disconnect(conn);
 		if (rconn)
 			pfree(rconn);
 
@@ -353,7 +426,7 @@ dblink_connect(PG_FUNCTION_ARGS)
 	}
 
 	/* check password actually used if not superuser */
-	dblink_security_check(conn, rconn);
+	dblink_security_check(conn, rconn, connstr);
 
 	/* attempt to set client encoding to match server encoding, if needed */
 	if (PQclientEncoding(conn) != GetDatabaseEncoding())
@@ -367,10 +440,7 @@ dblink_connect(PG_FUNCTION_ARGS)
 	else
 	{
 		if (pconn->conn)
-		{
-			PQfinish(pconn->conn);
-			ReleaseExternalFD();
-		}
+			libpqsrv_disconnect(pconn->conn);
 		pconn->conn = conn;
 	}
 
@@ -403,8 +473,9 @@ dblink_disconnect(PG_FUNCTION_ARGS)
 	if (!conn)
 		dblink_conn_not_avail(conname);
 
-	PQfinish(conn);
-	ReleaseExternalFD();
+	dblink_check_conn_not_in_use(rconn != NULL ? rconn : pconn, conname);
+
+	libpqsrv_disconnect(conn);
 	if (rconn)
 	{
 		deleteConnection(conname);
@@ -472,13 +543,14 @@ dblink_open(PG_FUNCTION_ARGS)
 
 	if (!rconn || !rconn->conn)
 		dblink_conn_not_avail(conname);
+	dblink_check_conn_not_in_use(rconn, conname);
 
 	conn = rconn->conn;
 
 	/* If we are not in a transaction, start one */
 	if (PQtransactionStatus(conn) == PQTRANS_IDLE)
 	{
-		res = PQexec(conn, "BEGIN");
+		res = libpqsrv_exec(conn, "BEGIN", PG_WAIT_EXTENSION);
 		if (PQresultStatus(res) != PGRES_COMMAND_OK)
 			dblink_res_internalerror(conn, res, "begin error");
 		PQclear(res);
@@ -497,7 +569,7 @@ dblink_open(PG_FUNCTION_ARGS)
 		(rconn->openCursorCount)++;
 
 	appendStringInfo(&buf, "DECLARE %s CURSOR FOR %s", curname, sql);
-	res = PQexec(conn, buf.data);
+	res = libpqsrv_exec(conn, buf.data, PG_WAIT_EXTENSION);
 	if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		dblink_res_error(conn, conname, res, fail,
@@ -560,13 +632,14 @@ dblink_close(PG_FUNCTION_ARGS)
 
 	if (!rconn || !rconn->conn)
 		dblink_conn_not_avail(conname);
+	dblink_check_conn_not_in_use(rconn, conname);
 
 	conn = rconn->conn;
 
 	appendStringInfo(&buf, "CLOSE %s", curname);
 
 	/* close the cursor */
-	res = PQexec(conn, buf.data);
+	res = libpqsrv_exec(conn, buf.data, PG_WAIT_EXTENSION);
 	if (!res || PQresultStatus(res) != PGRES_COMMAND_OK)
 	{
 		dblink_res_error(conn, conname, res, fail,
@@ -586,7 +659,7 @@ dblink_close(PG_FUNCTION_ARGS)
 		{
 			rconn->newXactForCursor = false;
 
-			res = PQexec(conn, "COMMIT");
+			res = libpqsrv_exec(conn, "COMMIT", PG_WAIT_EXTENSION);
 			if (PQresultStatus(res) != PGRES_COMMAND_OK)
 				dblink_res_internalerror(conn, res, "commit error");
 			PQclear(res);
@@ -636,6 +709,7 @@ dblink_fetch(PG_FUNCTION_ARGS)
 			curname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 			howmany = PG_GETARG_INT32(1);
 			fail = PG_GETARG_BOOL(2);
+			rconn = pconn;
 			conn = pconn->conn;
 		}
 		else
@@ -654,11 +728,13 @@ dblink_fetch(PG_FUNCTION_ARGS)
 		/* text,int */
 		curname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 		howmany = PG_GETARG_INT32(1);
+		rconn = pconn;
 		conn = pconn->conn;
 	}
 
 	if (!conn)
 		dblink_conn_not_avail(conname);
+	dblink_check_conn_not_in_use(rconn, conname);
 
 	initStringInfo(&buf);
 	appendStringInfo(&buf, "FETCH %d FROM %s", howmany, curname);
@@ -668,7 +744,7 @@ dblink_fetch(PG_FUNCTION_ARGS)
 	 * PGresult will be long-lived even though we are still in a short-lived
 	 * memory context.
 	 */
-	res = PQexec(conn, buf.data);
+	res = libpqsrv_exec(conn, buf.data, PG_WAIT_EXTENSION);
 	if (!res ||
 		(PQresultStatus(res) != PGRES_COMMAND_OK &&
 		 PQresultStatus(res) != PGRES_TUPLES_OK))
@@ -686,7 +762,7 @@ dblink_fetch(PG_FUNCTION_ARGS)
 				 errmsg("cursor \"%s\" does not exist", curname)));
 	}
 
-	materializeResult(fcinfo, conn, res);
+	materializeResult(fcinfo, conn, rconn, res);
 	return (Datum) 0;
 }
 
@@ -747,6 +823,7 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 		char	   *sql = NULL;
 		char	   *conname = NULL;
 		bool		fail = true;	/* default to backward compatible */
+		remoteConn *rconn = NULL;
 
 		if (!is_async)
 		{
@@ -756,7 +833,7 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 				conname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 				sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
 				fail = PG_GETARG_BOOL(2);
-				dblink_get_conn(conname, &conn, &conname, &freeconn);
+				dblink_get_conn(conname, &conn, &conname, &freeconn, &rconn);
 			}
 			else if (PG_NARGS() == 2)
 			{
@@ -765,18 +842,20 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 				{
 					sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 					fail = PG_GETARG_BOOL(1);
+					rconn = pconn;
 					conn = pconn->conn;
 				}
 				else
 				{
 					conname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 					sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
-					dblink_get_conn(conname, &conn, &conname, &freeconn);
+					dblink_get_conn(conname, &conn, &conname, &freeconn, &rconn);
 				}
 			}
 			else if (PG_NARGS() == 1)
 			{
 				/* text */
+				rconn = pconn;
 				conn = pconn->conn;
 				sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 			}
@@ -793,30 +872,37 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 			{
 				/* text,bool */
 				fail = PG_GETARG_BOOL(1);
-				conn = dblink_get_named_conn(conname);
+				rconn = getConnectionByName(conname);
 			}
 			else if (PG_NARGS() == 1)
 			{
 				/* text */
-				conn = dblink_get_named_conn(conname);
+				rconn = getConnectionByName(conname);
 			}
 			else
 				/* shouldn't happen */
 				elog(ERROR, "wrong number of arguments");
+
+			if (rconn)
+				conn = rconn->conn;
 		}
 
 		if (!conn)
 			dblink_conn_not_avail(conname);
+		dblink_check_conn_not_in_use(rconn, conname);
+
+		/* a connection we are to close cannot be one that SQL can name */
+		Assert(!freeconn || rconn == NULL);
 
 		if (!is_async)
 		{
 			/* synchronous query, use efficient tuple collection method */
-			materializeQueryResult(fcinfo, conn, conname, sql, fail);
+			materializeQueryResult(fcinfo, conn, rconn, conname, sql, fail);
 		}
 		else
 		{
 			/* async result retrieval, do it the old way */
-			PGresult   *res = PQgetResult(conn);
+			PGresult   *res = libpqsrv_get_result(conn, PG_WAIT_EXTENSION);
 
 			/* NULL means we're all done with the async results */
 			if (res)
@@ -830,7 +916,7 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 				}
 				else
 				{
-					materializeResult(fcinfo, conn, res);
+					materializeResult(fcinfo, conn, rconn, res);
 				}
 			}
 		}
@@ -839,10 +925,7 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 	{
 		/* if needed, close the connection to the database */
 		if (freeconn)
-		{
-			PQfinish(conn);
-			ReleaseExternalFD();
-		}
+			libpqsrv_disconnect(conn);
 	}
 	PG_END_TRY();
 
@@ -882,14 +965,25 @@ prepTuplestoreResult(FunctionCallInfo fcinfo)
  * Copy the contents of the PGresult into a tuplestore to be returned
  * as the result of the current function.
  * The PGresult will be released in this function.
+ *
+ * rconn is the corresponding connection cache entry to conn, or NULL
+ * if conn is a transient connection opened from a connection string.
  */
 static void
-materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
+materializeResult(FunctionCallInfo fcinfo, PGconn *conn, remoteConn *rconn,
+				  PGresult *res)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
 	/* prepTuplestoreResult must have been called previously */
 	Assert(rsinfo->returnMode == SFRM_Materialize);
+
+	/* Refuse other dblink calls on this connection while converting rows */
+	if (rconn)
+	{
+		Assert(!rconn->materializingResult);
+		rconn->materializingResult = true;
+	}
 
 	PG_TRY();
 	{
@@ -973,7 +1067,7 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 			rsinfo->setDesc = tupdesc;
 			MemoryContextSwitchTo(oldcontext);
 
-			values = (char **) palloc(nfields * sizeof(char *));
+			values = palloc_array(char *, nfields);
 
 			/* put all tuples into the tuplestore */
 			for (row = 0; row < ntuples; row++)
@@ -1004,13 +1098,14 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 
 			/* clean up GUC settings, if we changed any */
 			restoreLocalGucs(nestlevel);
-
-			/* clean up and return the tuplestore */
-			tuplestore_donestoring(tupstore);
 		}
 	}
 	PG_FINALLY();
 	{
+		/* Done converting rows, so other dblink calls may use it again */
+		if (rconn)
+			rconn->materializingResult = false;
+
 		/* be sure to release the libpq result */
 		PQclear(res);
 	}
@@ -1028,6 +1123,7 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 static void
 materializeQueryResult(FunctionCallInfo fcinfo,
 					   PGconn *conn,
+					   remoteConn *rconn,
 					   const char *conname,
 					   const char *sql,
 					   bool fail)
@@ -1040,6 +1136,13 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 	Assert(rsinfo->returnMode == SFRM_Materialize);
 
 	sinfo.fcinfo = fcinfo;
+
+	/* Refuse other dblink calls on this connection while converting rows */
+	if (rconn)
+	{
+		Assert(!rconn->materializingResult);
+		rconn->materializingResult = true;
+	}
 
 	PG_TRY();
 	{
@@ -1122,15 +1225,28 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 		sinfo.last_res = NULL;
 		PQclear(sinfo.cur_res);
 		sinfo.cur_res = NULL;
+
+		/* Done converting rows, so other dblink calls may use it again */
+		if (rconn)
+			rconn->materializingResult = false;
 	}
 	PG_CATCH();
 	{
+		/*
+		 * Draining the pending data can be interrupted, so clear the mark
+		 * first to avoid leaving the connection marked in use for the rest of
+		 * the session. This is safe since draining runs no user-defined code.
+		 */
+		if (rconn)
+			rconn->materializingResult = false;
+
 		/* be sure to release any libpq result we collected */
 		PQclear(res);
 		PQclear(sinfo.last_res);
 		PQclear(sinfo.cur_res);
 		/* and clear out any pending data in libpq */
-		while ((res = PQgetResult(conn)) != NULL)
+		while ((res = libpqsrv_get_result(conn, PG_WAIT_EXTENSION)) !=
+			   NULL)
 			PQclear(res);
 		PG_RE_THROW();
 	}
@@ -1157,7 +1273,7 @@ storeQueryResult(volatile storeInfo *sinfo, PGconn *conn, const char *sql)
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		sinfo->cur_res = PQgetResult(conn);
+		sinfo->cur_res = libpqsrv_get_result(conn, PG_WAIT_EXTENSION);
 		if (!sinfo->cur_res)
 			break;
 
@@ -1280,7 +1396,7 @@ storeRow(volatile storeInfo *sinfo, PGresult *res, bool first)
 		 */
 		if (sinfo->cstrs)
 			pfree(sinfo->cstrs);
-		sinfo->cstrs = (char **) palloc(nfields * sizeof(char *));
+		sinfo->cstrs = palloc_array(char *, nfields);
 	}
 
 	/* Should have a single-row result if we get here */
@@ -1340,8 +1456,8 @@ dblink_get_connections(PG_FUNCTION_ARGS)
 	}
 
 	if (astate)
-		PG_RETURN_ARRAYTYPE_P(makeArrayResult(astate,
-											  CurrentMemoryContext));
+		PG_RETURN_DATUM(makeArrayResult(astate,
+										CurrentMemoryContext));
 	else
 		PG_RETURN_NULL();
 }
@@ -1446,6 +1562,7 @@ dblink_exec(PG_FUNCTION_ARGS)
 		PGresult   *res = NULL;
 		char	   *sql = NULL;
 		char	   *conname = NULL;
+		remoteConn *rconn = NULL;
 		bool		fail = true;	/* default to backward compatible behavior */
 
 		if (PG_NARGS() == 3)
@@ -1454,7 +1571,7 @@ dblink_exec(PG_FUNCTION_ARGS)
 			conname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 			sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
 			fail = PG_GETARG_BOOL(2);
-			dblink_get_conn(conname, &conn, &conname, &freeconn);
+			dblink_get_conn(conname, &conn, &conname, &freeconn, &rconn);
 		}
 		else if (PG_NARGS() == 2)
 		{
@@ -1463,18 +1580,20 @@ dblink_exec(PG_FUNCTION_ARGS)
 			{
 				sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 				fail = PG_GETARG_BOOL(1);
+				rconn = pconn;
 				conn = pconn->conn;
 			}
 			else
 			{
 				conname = text_to_cstring(PG_GETARG_TEXT_PP(0));
 				sql = text_to_cstring(PG_GETARG_TEXT_PP(1));
-				dblink_get_conn(conname, &conn, &conname, &freeconn);
+				dblink_get_conn(conname, &conn, &conname, &freeconn, &rconn);
 			}
 		}
 		else if (PG_NARGS() == 1)
 		{
 			/* must be single text argument */
+			rconn = pconn;
 			conn = pconn->conn;
 			sql = text_to_cstring(PG_GETARG_TEXT_PP(0));
 		}
@@ -1485,7 +1604,9 @@ dblink_exec(PG_FUNCTION_ARGS)
 		if (!conn)
 			dblink_conn_not_avail(conname);
 
-		res = PQexec(conn, sql);
+		dblink_check_conn_not_in_use(rconn, conname);
+
+		res = libpqsrv_exec(conn, sql, PG_WAIT_EXTENSION);
 		if (!res ||
 			(PQresultStatus(res) != PGRES_COMMAND_OK &&
 			 PQresultStatus(res) != PGRES_TUPLES_OK))
@@ -1520,10 +1641,7 @@ dblink_exec(PG_FUNCTION_ARGS)
 	{
 		/* if needed, close the connection to the database */
 		if (freeconn)
-		{
-			PQfinish(conn);
-			ReleaseExternalFD();
-		}
+			libpqsrv_disconnect(conn);
 	}
 	PG_END_TRY();
 
@@ -1622,7 +1740,7 @@ dblink_get_pkey(PG_FUNCTION_ARGS)
 		HeapTuple	tuple;
 		Datum		result;
 
-		values = (char **) palloc(2 * sizeof(char *));
+		values = palloc_array(char *, 2);
 		values[0] = psprintf("%d", call_cntr + 1);
 		values[1] = results[call_cntr];
 
@@ -1930,36 +2048,17 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	PGconn	   *conn;
 	PGnotify   *notify;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
-	MemoryContext per_query_ctx;
-	MemoryContext oldcontext;
-
-	prepTuplestoreResult(fcinfo);
 
 	dblink_init();
 	if (PG_NARGS() == 1)
 		conn = dblink_get_named_conn(text_to_cstring(PG_GETARG_TEXT_PP(0)));
 	else
+	{
+		dblink_check_conn_not_in_use(pconn, NULL);
 		conn = pconn->conn;
+	}
 
-	/* create the tuplestore in per-query memory */
-	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
-	oldcontext = MemoryContextSwitchTo(per_query_ctx);
-
-	tupdesc = CreateTemplateTupleDesc(DBLINK_NOTIFY_COLS);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "notify_name",
-					   TEXTOID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "be_pid",
-					   INT4OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "extra",
-					   TEXTOID, -1, 0);
-
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsinfo->setResult = tupstore;
-	rsinfo->setDesc = tupdesc;
-
-	MemoryContextSwitchTo(oldcontext);
+	InitMaterializedSRF(fcinfo, 0);
 
 	PQconsumeInput(conn);
 	while ((notify = PQnotifies(conn)) != NULL)
@@ -1982,14 +2081,11 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 		else
 			nulls[2] = true;
 
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 
 		PQfreemem(notify);
 		PQconsumeInput(conn);
 	}
-
-	/* clean up and return the tuplestore */
-	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
 }
@@ -2037,25 +2133,32 @@ dblink_fdw_validator(PG_FUNCTION_ARGS)
 		{
 			/*
 			 * Unknown option, or invalid option for the context specified, so
-			 * complain about it.  Provide a hint with list of valid options
-			 * for the context.
+			 * complain about it.  Provide a hint with a valid option that
+			 * looks similar, if there is one.
 			 */
-			StringInfoData buf;
 			const PQconninfoOption *opt;
+			const char *closest_match;
+			ClosestMatchState match_state;
+			bool		has_valid_options = false;
 
-			initStringInfo(&buf);
+			initClosestMatch(&match_state, def->defname, 4);
 			for (opt = options; opt->keyword; opt++)
 			{
 				if (is_valid_dblink_option(options, opt->keyword, context))
-					appendStringInfo(&buf, "%s%s",
-									 (buf.len > 0) ? ", " : "",
-									 opt->keyword);
+				{
+					has_valid_options = true;
+					updateClosestMatch(&match_state, opt->keyword);
+				}
 			}
+
+			closest_match = getClosestMatch(&match_state);
 			ereport(ERROR,
 					(errcode(ERRCODE_FDW_OPTION_NAME_NOT_FOUND),
 					 errmsg("invalid option \"%s\"", def->defname),
-					 errhint("Valid options in this context are: %s",
-							 buf.data)));
+					 has_valid_options ? closest_match ?
+					 errhint("Perhaps you meant the option \"%s\".",
+							 closest_match) : 0 :
+					 errhint("There are no valid options in this context.")));
 		}
 	}
 
@@ -2110,7 +2213,7 @@ get_pkey_attnames(Relation rel, int16 *indnkeyatts)
 			*indnkeyatts = index->indnkeyatts;
 			if (*indnkeyatts > 0)
 			{
-				result = (char **) palloc(*indnkeyatts * sizeof(char *));
+				result = palloc_array(char *, *indnkeyatts);
 
 				for (i = 0; i < *indnkeyatts; i++)
 					result[i] = SPI_fname(tupdesc, index->indkey.values[i]);
@@ -2151,7 +2254,7 @@ get_text_array_contents(ArrayType *array, int *numitems)
 	get_typlenbyvalalign(ARR_ELEMTYPE(array),
 						 &typlen, &typbyval, &typalign);
 
-	values = (char **) palloc(nitems * sizeof(char *));
+	values = palloc_array(char *, nitems);
 
 	ptr = ARR_DATA_PTR(array);
 	bitmap = ARR_NULLBITMAP(array);
@@ -2628,8 +2731,7 @@ createNewConnection(const char *name, remoteConn *rconn)
 
 	if (found)
 	{
-		PQfinish(rconn->conn);
-		ReleaseExternalFD();
+		libpqsrv_disconnect(rconn->conn);
 		pfree(rconn);
 
 		ereport(ERROR,
@@ -2660,109 +2762,157 @@ deleteConnection(const char *name)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("undefined connection name")));
-
-}
-
-static void
-dblink_security_check(PGconn *conn, remoteConn *rconn)
-{
-	if (!superuser())
-	{
-		if (!PQconnectionUsedPassword(conn))
-		{
-			PQfinish(conn);
-			ReleaseExternalFD();
-			if (rconn)
-				pfree(rconn);
-
-			ereport(ERROR,
-					(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
-					 errmsg("password is required"),
-					 errdetail("Non-superuser cannot connect if the server does not request a password."),
-					 errhint("Target server's authentication method must be changed.")));
-		}
-	}
 }
 
 /*
- * For non-superusers, insist that the connstr specify a password.  This
- * prevents a password from being picked up from .pgpass, a service file,
- * the environment, etc.  We don't want the postgres user's passwords
- * to be accessible to non-superusers.
+ * We need to make sure that the connection made used credentials
+ * which were provided by the user, so check what credentials were
+ * used to connect and then make sure that they came from the user.
+ */
+static void
+dblink_security_check(PGconn *conn, remoteConn *rconn, const char *connstr)
+{
+	/* Superuser bypasses security check */
+	if (superuser())
+		return;
+
+	/* Difference with upstream, return type is str not bool.
+	* dblink_connstr_has_pw also never returns of missing password
+	*/
+	(void) dblink_connstr_has_pw(connstr);
+
+	/* If password was used to connect, make sure it was one provided */
+	if (PQconnectionUsedPassword(conn))
+		return;
+
+#ifdef ENABLE_GSS
+	/* If GSSAPI creds used to connect, make sure it was one delegated */
+	if (PQconnectionUsedGSSAPI(conn) && be_gssapi_get_delegation(MyProcPort))
+		return;
+#endif
+
+	/* Otherwise, fail out */
+	libpqsrv_disconnect(conn);
+	if (rconn)
+		pfree(rconn);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
+			 errmsg("password or GSSAPI delegated credentials required"),
+			 errdetail("Non-superusers may only connect using credentials they provide, eg: password in connection string or delegated GSSAPI credentials"),
+			 errhint("Ensure provided credentials match target server's authentication method.")));
+}
+
+/*
+ * Function to check if the connection string includes an explicit
+ * password, needed to ensure that non-superuser password-based auth
+ * is using a provided password and not one picked up from the
+ * environment.
+ */
+static char *
+dblink_connstr_has_pw(const char *connstr)
+{
+	PQconninfoOption *options;
+	PQconninfoOption *option;
+	bool		connstr_gives_password = false;
+	bool		username_is_set = false;
+	bool		host_is_set = false;
+	char		*connstr_modified = (char *) connstr;
+
+	options = PQconninfoParse(connstr, NULL);
+	if (options)
+	{
+		for (option = options; option->keyword != NULL; option++)
+		{
+
+			if (strcmp(option->keyword, "host") == 0)
+			{
+				if (option->val != NULL && option->val[0] != '\0')
+				{
+					host_is_set = true;
+				}
+			}
+
+			if (strcmp(option->keyword, "user") == 0)
+			{
+				if (option->val == NULL || option->val[0] == '\0')
+				{
+					char *username = GetUserNameFromId(GetUserId(), false);
+
+					/* 7 is strlen("user= ") + length of '\0' */
+					connstr_modified = palloc0(7 + strlen(username) + strlen(connstr));
+					sprintf(connstr_modified, "user=%s %s", username, connstr);
+				}
+
+				username_is_set = true;
+			}
+
+
+			if (strcmp(option->keyword, "password") == 0)
+			{
+				if (option->val != NULL && option->val[0] != '\0')
+				{
+					connstr_gives_password = true;
+				}
+			}
+
+			if (host_is_set && username_is_set && connstr_gives_password)
+				break;
+		}
+		PQconninfoFree(options);
+	}
+
+	if (!host_is_set)
+		ereport(ERROR,
+				(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
+					errmsg("host is required"),
+					errdetail("Non-superusers must provide a host in the connection string.")));
+
+	if (!connstr_gives_password)
+		ereport(ERROR,
+				(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
+					errmsg("password is required"),
+					errdetail("Non-superusers must provide a password in the connection string.")));
+
+	return connstr_modified;
+}
+
+/*
+ * For non-superusers, insist that the connstr specify a password, except
+ * if GSSAPI credentials have been delegated (and we check that they are used
+ * for the connection in dblink_security_check later).  This prevents a
+ * password or GSSAPI credentials from being picked up from .pgpass, a
+ * service file, the environment, etc.  We don't want the postgres user's
+ * passwords or Kerberos credentials to be accessible to non-superusers.
  *
  * For Cloudberry, dblink uses built libpq to construct conninfo, whose user is
  * environment variable PGUSER, which is wrong, modifies this function to add
  * the session's username into connstr.
- *
  */
 static char *
-dblink_connstr_check(const char *connstr)
+dblink_connstr_check(char *connstr)
 {
-	char	*connstr_modified = (char *) connstr;
+	if (superuser())
+		return connstr;
 
-	if (!superuser())
-	{
-		PQconninfoOption *options;
-		PQconninfoOption *option;
-		bool		connstr_gives_password = false;
-		bool				username_is_set = false;
-		bool				host_is_set = false;
+	/* Difference with upstream, return type is str not bool.
+	* dblink_connstr_has_pw also never returns of missing password
+	*/
+	char *res = dblink_connstr_has_pw(connstr);
 
-		options = PQconninfoParse(connstr, NULL);
-		if (options)
-		{
-			for (option = options; option->keyword != NULL; option++)
-			{
-				if (strcmp(option->keyword, "host") == 0)
-				{
-					if (option->val != NULL && option->val[0] != '\0')
-					{
-						host_is_set = true;
-					}
-				}
+#ifdef ENABLE_GSS
+	if (be_gssapi_get_delegation(MyProcPort))
+		return res;
+#endif
 
-				if (strcmp(option->keyword, "user") == 0)
-				{
-					if (option->val == NULL || option->val[0] == '\0')
-					{
-						char *username = GetUserNameFromId(GetUserId(), false);
-
-						/* 7 is strlen("user= ") + length of '\0' */
-						connstr_modified = palloc0(7 + strlen(username) + strlen(connstr));
-						sprintf(connstr_modified, "user=%s %s", username, connstr);
-					}
-
-					username_is_set = true;
-				}
-
-				if (strcmp(option->keyword, "password") == 0)
-				{
-					if (option->val != NULL && option->val[0] != '\0')
-					{
-						connstr_gives_password = true;
-					}
-				}
-
-				if (host_is_set && username_is_set && connstr_gives_password)
-					break;
-			}
-			PQconninfoFree(options);
-		}
-
-		if (!host_is_set)
-			ereport(ERROR,
-					(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
-					 errmsg("host is required"),
-					 errdetail("Non-superusers must provide a host in the connection string.")));
-
-		if (!connstr_gives_password)
-			ereport(ERROR,
-					(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
-					 errmsg("password is required"),
-					 errdetail("Non-superusers must provide a password in the connection string.")));
-	}
-
-	return connstr_modified;
+	/* see `dblink_connstr_has_pw` */
+	return res;
+#if 0
+	ereport(ERROR,
+			(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
+			 errmsg("password or GSSAPI delegated credentials required"),
+			 errdetail("Non-superusers must provide a password in the connection string or send delegated GSSAPI credentials.")));
+#endif
 }
 
 /*
@@ -2812,8 +2962,8 @@ dblink_res_error(PGconn *conn, const char *conname, PGresult *res,
 
 	/*
 	 * If we don't get a message from the PGresult, try the PGconn.  This is
-	 * needed because for connection-level failures, PQexec may just return
-	 * NULL, not a PGresult at all.
+	 * needed because for connection-level failures, PQgetResult may just
+	 * return NULL, not a PGresult at all.
 	 */
 	if (message_primary == NULL)
 		message_primary = pchomp(PQerrorMessage(conn));
@@ -2824,8 +2974,7 @@ dblink_res_error(PGconn *conn, const char *conname, PGresult *res,
 	 * leaking all the strings too, but those are in palloc'd memory that will
 	 * get cleaned up eventually.
 	 */
-	if (res)
-		PQclear(res);
+	PQclear(res);
 
 	/*
 	 * Format the basic errcontext string.  Below, we'll add on something
@@ -2903,7 +3052,7 @@ get_connect_string(const char *servername)
 		fdw = GetForeignDataWrapper(fdwid);
 
 		/* Check permissions, user must have usage on the server. */
-		aclresult = pg_foreign_server_aclcheck(serverid, userid, ACL_USAGE);
+		aclresult = object_aclcheck(ForeignServerRelationId, serverid, userid, ACL_USAGE);
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error(aclresult, OBJECT_FOREIGN_SERVER, foreign_server->servername);
 
@@ -2998,7 +3147,7 @@ validate_pkattnums(Relation rel,
 				 errmsg("number of key attributes must be > 0")));
 
 	/* Allocate output array */
-	*pkattnums = (int *) palloc(pknumatts_arg * sizeof(int));
+	*pkattnums = palloc_array(int, pknumatts_arg);
 	*pknumatts = pknumatts_arg;
 
 	/* Validate attnums and convert to internal form */

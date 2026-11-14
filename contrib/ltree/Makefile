@@ -12,7 +12,6 @@ OBJS = \
 	ltree_op.o \
 	ltxtquery_io.o \
 	ltxtquery_op.o
-PG_CPPFLAGS = -DLOWER_NODE
 
 EXTENSION = ltree
 DATA = ltree--1.1--1.2.sql ltree--1.1.sql ltree--1.0--1.1.sql
@@ -22,6 +21,8 @@ HEADERS = ltree.h
 
 REGRESS = ltree
 REGRESS_OPTS += --init-file=$(top_srcdir)/src/test/regress/init_file
+
+ISOLATION = schema-rename-attack
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

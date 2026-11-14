@@ -51,6 +51,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalAbstractBitmapScan.o \
               CDXLPhysicalAgg.o \
               CDXLPhysicalAppend.o \
+			  CDXLPhysicalParallelAppend.o \
               CDXLPhysicalAssert.o \
               CDXLPhysicalBitmapTableScan.o \
               CDXLPhysicalBroadcastMotion.o \
@@ -85,6 +86,7 @@ OBJS        = CDXLColDescr.o \
               CDXLPhysicalSplit.o \
               CDXLPhysicalTVF.o \
               CDXLPhysicalTableScan.o \
+              CDXLPhysicalParallelTableScan.o \
               CDXLPhysicalValuesScan.o \
               CDXLPhysicalWindow.o \
               CDXLProperties.o \

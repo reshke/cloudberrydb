@@ -36,7 +36,6 @@ struct TypeCacheEntry;
 using Numeric = struct NumericData *;
 using HeapTuple = struct HeapTupleData *;
 using Relation = struct RelationData *;
-struct Value;
 using TupleDesc = struct TupleDescData *;
 struct Query;
 using ScanKey = struct ScanKeyData *;
@@ -263,6 +262,8 @@ List *ExtractNodesExpression(Node *node, int node_tag,
 // intermediate result type of given aggregate
 Oid GetAggIntermediateResultType(Oid aggid);
 
+bool IsAggFinalFuncVolatile(Oid aggid);
+
 // Identify the specific datatypes passed to an aggregate call.
 int GetAggregateArgTypes(Aggref *aggref, Oid *inputTypes);
 
@@ -301,6 +302,9 @@ bool IsRepSafeAgg(Oid aggid);
 
 // does aggregate have a combine function (and serial/deserial functions, if needed)
 bool IsAggPartialCapable(Oid aggid);
+
+// is the result of the aggregate independent of the order of its input
+bool IsAggOrderInsensitive(Oid aggid);
 
 // intermediate result type of given aggregate
 Oid GetAggregate(const char *agg, Oid type_oid);
@@ -506,10 +510,10 @@ void ListFreeDeep(List *list);
 TypeCacheEntry *LookupTypeCache(Oid type_id, int flags);
 
 // create a value node for a string
-Value *MakeStringValue(char *str);
+String *MakeStringValue(char *str);
 
 // create a value node for an integer
-Value *MakeIntegerValue(long i);
+Integer *MakeIntegerValue(long i);
 
 // create a constant of type int4
 Node *MakeIntConst(int32 intValue);
@@ -673,6 +677,9 @@ int FindNodes(Node *node, List *nodeTags);
 // look for nodes with non-default collation; returns 1 if any exist, -1 otherwise
 int CheckCollation(Node *node);
 
+// check if ORDER BY uses an ordering operator (amcanorderbyop) unsupported by ORCA
+bool HasOrderByOrderingOp(Query *query);
+
 Node *CoerceToCommonType(ParseState *pstate, Node *node, Oid target_type,
 						 const char *context);
 
@@ -687,7 +694,7 @@ int32 CdbHashConstList(List *constants, int num_segments, Oid *hashfuncs);
 unsigned int CdbHashRandomSeg(int num_segments);
 
 // check permissions on range table
-void CheckRTPermissions(List *rtable);
+void CheckRTPermissions(List *rtable, List *rteperminfos);
 
 // throw an error if table has update triggers.
 bool HasUpdateTriggers(Oid relid);
@@ -716,6 +723,9 @@ List *GetMergeJoinOpFamilies(Oid opno);
 
 // get the OID of base elementtype fora given typid
 Oid GetBaseType(Oid typid);
+
+// check if parallel mode is OK (comprehensive check)
+bool IsParallelModeOK(void);
 
 // returns the result of evaluating 'expr' as an Expr. Caller keeps ownership of 'expr'
 // and takes ownership of the result
@@ -768,6 +778,8 @@ List *GetRelChildIndexes(Oid reloid);
 
 Oid GetForeignServerId(Oid reloid);
 
+int16 GetAppendOnlySegmentFilesCount(Relation rel);
+
 void GPDBLockRelationOid(Oid reloid, int lockmode);
 
 char *GetRelFdwName(Oid reloid);
@@ -790,14 +802,16 @@ TargetEntry *FlatCopyTargetEntry(TargetEntry *src_tle);
 
 bool IsTypeRange(Oid typid);
 
+bool IsTypeMultirange(Oid typid);
+
 char *GetRelAmName(Oid reloid);
 
 IndexAmRoutine *GetIndexAmRoutineFromAmHandler(Oid am_handler);
 
 bool TestexprIsHashable(Node *testexpr, List *param_ids);
 
-gpos::BOOL WalkQueryTree(Query *query, bool (*walker)(), void *context,
-						 int flags);
+RTEPermissionInfo *
+GetRTEPermissionInfo(List *rteperminfos, const RangeTblEntry *rte);
 
 }  //namespace gpdb
 

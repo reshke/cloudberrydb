@@ -89,6 +89,13 @@ m/Distributed randomly/
 -- m/^HINT.*To uniquely identify a row within a distributed table.*/
 -- m/^NOTICE.*SELECT uses system-defined column.*/
 
+# When a QE errors out, the QD cancels the other QEs.  A QE that has already
+# committed locally (e.g. the first transaction of CREATE INDEX CONCURRENTLY)
+# and is waiting for the mirror ignores the cancel and warns about it.  Whether
+# that happens depends on timing, so ignore the warning and its detail.
+m/^WARNING:  ignoring query cancel request for synchronous replication to ensure cluster consistency/
+m/^DETAIL:  The transaction has already changed locally, it has to be replicated to standby\./
+
 -- end_matchignore
 
 -- start_matchsubs
@@ -128,6 +135,11 @@ s/ERROR:  could not find hash function for hash operator.*/ERROR:  could not fin
 
 m/ERROR:  could not devise a plan.*/
 s/ERROR:  could not devise a plan.*/ERROR:  could not devise a plan (cdbpath.c:XXX)/
+
+# Mask out attribute numbers in ORCA fallback messages (changed in PG16)
+m/Attribute number \d+ not found in project list/
+s/Attribute number \d+ not found in project list/Attribute number ### not found in project list/
+
 
 m/nodename nor servname provided, or not known/
 s/nodename nor servname provided, or not known/Name or service not known/

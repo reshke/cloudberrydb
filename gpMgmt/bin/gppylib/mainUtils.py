@@ -307,13 +307,13 @@ def simple_main_internal(createOptionParserFn, createCommandFn, mainOptions):
 
     # at this point we have whatever lock we require
     try:
-        simple_main_locked(parserOptions, parserArgs, createCommandFn, mainOptions)
+        simple_main_locked(parser, parserOptions, parserArgs, createCommandFn, mainOptions)
     finally:
         if sml is not None:
             sml.release()
 
 
-def simple_main_locked(parserOptions, parserArgs, createCommandFn, mainOptions):
+def simple_main_locked(parser, parserOptions, parserArgs, createCommandFn, mainOptions):
     """
     Not to be called externally -- use simple_main instead
     """
@@ -326,7 +326,6 @@ def simple_main_locked(parserOptions, parserArgs, createCommandFn, mainOptions):
     faultProberInterface.registerFaultProber(faultProberImplGpdb.GpFaultProberImplGpdb())
 
     commandObject = None
-    parser = None
 
     forceQuiet = mainOptions is not None and mainOptions.get("forceQuietOutput")
 
@@ -488,7 +487,7 @@ def parseStatusLine(line, isStart = False, isStop = False):
 
     
 def check_fts(fts):
-    fts_check_cmd= "ps -ef | awk '{print \$2, \$8}' | grep gpfts | grep -v grep"
+    fts_check_cmd= r"ps -ef | awk '{print \$2, \$8}' | grep gpfts | grep -v grep"
     process_cmd = "gpssh -h %s -e \"%s\" | wc -l" % (fts, fts_check_cmd)
     fts_process_res=int(subprocess.check_output(process_cmd, shell=True).decode().strip())
     return fts_process_res == 2
@@ -500,7 +499,7 @@ def check_etcd(etcd):
     if etcd_process_res == 2:
         return True
     # for demo cluster
-    etcd_check_cmd = "ps -ef | awk '{print \$2, \$8}' | grep etcd | grep -v grep"
+    etcd_check_cmd = r"ps -ef | awk '{print \$2, \$8}' | grep etcd | grep -v grep"
     process_cmd = "gpssh -h %s -e \"%s\"| wc -l" % (etcd, etcd_check_cmd)
     etcd_process_res = int(subprocess.check_output(process_cmd, shell=True).decode().strip())
     return etcd_process_res == 2

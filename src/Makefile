@@ -13,15 +13,13 @@ top_builddir = ..
 include Makefile.global
 include Makefile.mock
 
-# In PostgreSQL, libpqwalreceiver is linked into a separate shared library.
-# In GPDB, it's linked as a normal object, check src/backend/replication/Makefile.
-# Remove backend/replication/libpqwalreceiver from SUBDIRS here.
 SUBDIRS = \
 	common \
 	port \
 	timezone \
 	backend \
 	backend/utils/mb/conversion_procs \
+	backend/replication/libpqwalreceiver \
 	backend/snowball \
 	include \
 	interfaces \
@@ -69,6 +67,7 @@ clean:
 	$(MAKE) -C test $@
 	$(MAKE) -C tutorial NO_PGXS=1 $@
 	$(MAKE) -C test/isolation $@
+	$(MAKE) -C tools/pg_bsd_indent $@
 	$(MAKE) -C test/thread $@
 	$(MAKE) -C $(MOCK_DIR) $@
 	$(MAKE) -C $(CMOCKERY_DIR) $@
@@ -77,6 +76,7 @@ distclean maintainer-clean:
 	$(MAKE) -C test $@
 	$(MAKE) -C tutorial NO_PGXS=1 $@
 	$(MAKE) -C test/isolation $@
+	$(MAKE) -C tools/pg_bsd_indent $@
 	$(MAKE) -C test/thread $@
 	$(MAKE) -C $(MOCK_DIR) $@
 	$(MAKE) -C $(CMOCKERY_DIR) $@

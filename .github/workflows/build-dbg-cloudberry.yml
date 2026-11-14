@@ -205,6 +205,7 @@ jobs:
     if: needs.check-skip.outputs.should_skip != 'true'
     outputs:
       test-matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has-tests: ${{ steps.set-matrix.outputs.has-tests }}
 
     steps:
       - id: set-matrix
@@ -222,6 +223,9 @@ jobs:
           # Define base test configurations
           ALL_TESTS='{
             "include": [
+              {"test":"ic-cbdb-parallel",
+               "make_configs":["src/test/regress:installcheck-cbdb-parallel"]
+              }
             ]
           }'
 
@@ -297,6 +301,7 @@ jobs:
             echo "matrix<<EOF"
             echo "$RESULT"
             echo "EOF"
+            echo "has-tests=$(echo "$RESULT" | jq -r '.include | length > 0')"
           } >> "$GITHUB_OUTPUT"
 
           echo "=== Matrix Preparation Complete ==="
@@ -338,7 +343,7 @@ jobs:
 
       - name: Checkout Apache Cloudberry
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           submodules: true
@@ -503,7 +508,10 @@ jobs:
             "${SRC_DIR}"/devops/build/packaging/rpm/build-rpm.sh --version "${CBDB_VERSION}" --release "${BUILD_NUMBER}" "${DEBUG_RPMBUILD_OPT}"
 
             # Get OS version and move RPM
-            os_version=$(grep -oP '(?<=^VERSION_ID=")[0-9]' /etc/os-release)
+            # build-rpm.sh normalizes the published file name to the historical
+            # format (without the "-<major>" segment); the package Name metadata
+            # still embeds the major version.
+            os_version=$(grep -oP '(?<=^VERSION_ID=")[0-9]+' /etc/os-release)
             RPM_FILE="${HOME}"/rpmbuild/RPMS/x86_64/apache-cloudberry-db-incubating-"${CBDB_VERSION}"-"${BUILD_NUMBER}""${DEBUG_IDENTIFIER}".el"${os_version}".x86_64.rpm
             cp "${RPM_FILE}" "${SRC_DIR}"
 
@@ -514,7 +522,7 @@ jobs:
             # Verify critical files in RPM
             echo "Verifying critical files in RPM..."
             for binary in "bin/postgres" "bin/psql"; do
-              if ! rpm -qlp "${RPM_FILE}" | grep -q "${binary}$"; then
+              if ! rpm -qlp "${RPM_FILE}" | grep "${binary}$" >/dev/null 2>&1; then
                 echo "::error::Critical binary '${binary}' not found in RPM"
                 exit 1
               fi
@@ -551,7 +559,7 @@ jobs:
 
       - name: Upload build logs
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-logs-${{ env.BUILD_TIMESTAMP }}
           path: |
@@ -560,7 +568,7 @@ jobs:
 
       - name: Upload Cloudberry RPM build artifacts
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apache-cloudberry-db-incubating-rpm-build-artifacts
           retention-days: ${{ env.LOG_RETENTION_DAYS }}
@@ -570,7 +578,7 @@ jobs:
 
       - name: Upload Cloudberry source build artifacts
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apache-cloudberry-db-incubating-source-build-artifacts
           retention-days: ${{ env.LOG_RETENTION_DAYS }}
@@ -603,7 +611,7 @@ jobs:
 
       - name: Download Cloudberry RPM build artifacts
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apache-cloudberry-db-incubating-rpm-build-artifacts
           path: ${{ github.workspace }}/rpm_build_artifacts
@@ -675,7 +683,7 @@ jobs:
             # Verify expected binaries are in the RPM
             echo "Verifying critical files in RPM..."
             for binary in "bin/postgres" "bin/psql"; do
-              if ! rpm -qlp "${RPM_FILE}" | grep -q "${binary}$"; then
+              if ! rpm -qlp "${RPM_FILE}" | grep "${binary}$" >/dev/null 2>&1; then
                 echo "::error::Critical binary '${binary}' not found in RPM"
                 exit 1
               fi
@@ -723,14 +731,14 @@ jobs:
             fi
 
             echo "Installation completed successfully"
-            rpm -qi apache-cloudberry-db-incubating
+            rpm -qa 'apache-cloudberry-db-incubating*' | xargs -r rpm -qi
             echo "Installed files:"
-            rpm -ql apache-cloudberry-db-incubating
+            rpm -qa 'apache-cloudberry-db-incubating*' | xargs -r rpm -ql
           } 2>&1 | tee -a install-logs/details/rpm-installation.log
 
       - name: Upload install logs
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: install-logs-${{ needs.build.outputs.build_timestamp }}
           path: |
@@ -745,7 +753,7 @@ jobs:
             echo "# Installed Package Summary"
             echo "\`\`\`"
 
-            rpm -qi apache-cloudberry-db-incubating
+            rpm -qa 'apache-cloudberry-db-incubating*' | xargs -r rpm -qi
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY" || true
 
@@ -756,6 +764,7 @@ jobs:
   test:
     name: ${{ matrix.test }}
     needs: [check-skip, build, prepare-test-matrix]
+    if: needs.prepare-test-matrix.outputs.has-tests == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     # actionlint-allow matrix[*].pg_settings
@@ -773,8 +782,33 @@ jobs:
         --ulimit core=-1
         --cgroupns=host
         -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+        -v /usr/share:/host_usr_share
+        -v /usr/local:/host_usr_local
+        -v /opt:/host_opt
 
     steps:
+      - name: Free Disk Space
+        if: needs.check-skip.outputs.should_skip != 'true'
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h /
+
+          # Remove pre-installed tools from host to free disk space
+          rm -rf /host_opt/hostedtoolcache || true   # GitHub Actions tool cache
+          rm -rf /host_usr_local/lib/android || true # Android SDK
+          rm -rf /host_usr_share/dotnet || true      # .NET SDK
+          rm -rf /host_opt/ghc || true               # Haskell GHC
+          rm -rf /host_usr_local/.ghcup || true      # Haskell GHCup
+          rm -rf /host_usr_share/swift || true       # Swift
+          rm -rf /host_usr_local/share/powershell || true  # PowerShell
+          rm -rf /host_usr_local/share/chromium || true    # Chromium
+          rm -rf /host_usr_share/miniconda || true   # Miniconda
+          rm -rf /host_opt/az || true                # Azure CLI
+          rm -rf /host_usr_share/sbt || true         # Scala Build Tool
+
+          echo "=== Disk space after cleanup ==="
+          df -h /
+
       - name: Skip Check
         if: needs.check-skip.outputs.should_skip == 'true'
         run: |
@@ -980,7 +1014,7 @@ jobs:
 
       - name: Download Cloudberry RPM build artifacts
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apache-cloudberry-db-incubating-rpm-build-artifacts
           path: ${{ github.workspace }}/rpm_build_artifacts
@@ -988,7 +1022,7 @@ jobs:
 
       - name: Download Cloudberry Source build artifacts
         if: needs.check-skip.outputs.should_skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apache-cloudberry-db-incubating-source-build-artifacts
           path: ${{ github.workspace }}/source_build_artifacts
@@ -1047,7 +1081,7 @@ jobs:
             # Verify expected binaries are in the RPM
             echo "Verifying critical files in RPM..."
             for binary in "bin/postgres" "bin/psql"; do
-              if ! rpm -qlp "${RPM_FILE}" | grep -q "${binary}$"; then
+              if ! rpm -qlp "${RPM_FILE}" | grep "${binary}$" >/dev/null 2>&1; then
                 echo "::error::Critical binary '${binary}' not found in RPM"
                 exit 1
               fi
@@ -1095,7 +1129,7 @@ jobs:
             fi
 
             echo "Installation completed successfully"
-            rpm -qi apache-cloudberry-db-incubating
+            rpm -qa 'apache-cloudberry-db-incubating*' | xargs -r rpm -qi
           } 2>&1 | tee -a build-logs/details/rpm-installation.log
 
       - name: Extract source tarball
@@ -1304,7 +1338,7 @@ jobs:
                 echo "FAILED_TESTS=0"
                 echo "PASSED_TESTS=0"
                 echo "IGNORED_TESTS=0"
-              } > "test_results.$i.txt"
+              } > "test_results.${{ matrix.test }}.$i.txt"
               overall_status=1
               continue
             fi
@@ -1364,7 +1398,7 @@ jobs:
                   ;;
             esac
 
-            echo "Results stored in test_results.$i.txt"
+            echo "Results stored in test_results.${{ matrix.test }}.$i.txt"
             echo "=== End parsing for configuration $((i+1)) ==="
             echo ""
           done
@@ -1486,9 +1520,16 @@ jobs:
                 continue
               fi
 
-              # Source configuration results
-              # shellcheck source=/dev/null
-              . "test_results.${{ matrix.test }}.$i.txt"
+              # Read result fields as data, not shell commands. Reset optional
+              # fields on each iteration so they cannot leak from a prior suite.
+              STATUS= TOTAL_TESTS= PASSED_TESTS= FAILED_TESTS= IGNORED_TESTS=
+              FAILED_TEST_NAMES= IGNORED_TEST_NAMES=
+              while IFS='=' read -r key value; do
+                case "$key" in
+                  STATUS|TOTAL_TESTS|PASSED_TESTS|FAILED_TESTS|IGNORED_TESTS|FAILED_TEST_NAMES|IGNORED_TEST_NAMES)
+                    printf -v "$key" '%s' "$value" ;;
+                esac
+              done < "test_results.${{ matrix.test }}.$i.txt"
 
               # Rest of the code remains the same...
               # Display status with emoji
@@ -1553,7 +1594,7 @@ jobs:
 
       - name: Upload test logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-logs-${{ matrix.test }}-${{ needs.build.outputs.build_timestamp }}
           path: |
@@ -1562,7 +1603,7 @@ jobs:
 
       - name: Upload Test Metadata
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-metadata-${{ matrix.test }}
           path: |
@@ -1570,7 +1611,7 @@ jobs:
           retention-days: ${{ env.LOG_RETENTION_DAYS }}
 
       - name: Upload test results files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: results-${{ matrix.test }}-${{ needs.build.outputs.build_timestamp }}
           path: |
@@ -1581,7 +1622,7 @@ jobs:
 
       - name: Upload test regression logs
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: regression-logs-${{ matrix.test }}-${{ needs.build.outputs.build_timestamp }}
           path: |
@@ -1625,6 +1666,11 @@ jobs:
 
               if [[ "${{ needs.build.result }}" == "success" && "${{ needs.test.result }}" == "success" ]]; then
                 echo "✅ Pipeline completed successfully"
+              elif [[ "${{ needs.build.result }}" == "success" && \
+                      "${{ needs.prepare-test-matrix.result }}" == "success" && \
+                      "${{ needs.prepare-test-matrix.outputs.has-tests }}" == "false" && \
+                      "${{ needs.test.result }}" == "skipped" ]]; then
+                echo "ℹ️ Build completed; no debug tests are configured"
               else
                 echo "⚠️ Pipeline completed with failures"
 
@@ -1644,7 +1690,11 @@ jobs:
       - name: Notify on failure
         if: |
           needs.check-skip.outputs.should_skip != 'true' &&
-          (needs.build.result != 'success' || needs.test.result != 'success')
+          (needs.build.result != 'success' ||
+           (needs.test.result != 'success' &&
+            !(needs.prepare-test-matrix.result == 'success' &&
+              needs.prepare-test-matrix.outputs.has-tests == 'false' &&
+              needs.test.result == 'skipped')))
         run: |
           echo "::error::Build/Test pipeline failed! Check job summaries and logs for details"
           echo "Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"

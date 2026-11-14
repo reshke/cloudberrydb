@@ -144,8 +144,11 @@ CXformFactory::Instantiate()
 	Add(GPOS_NEW(m_mp) CXformExpandNAryJoinMinCard(m_mp));
 	Add(GPOS_NEW(m_mp) CXformExpandNAryJoinDP(m_mp));
 	Add(GPOS_NEW(m_mp) CXformGet2TableScan(m_mp));
+	Add(GPOS_NEW(m_mp) CXformGet2ParallelTableScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformIndexGet2IndexScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformDynamicGet2DynamicTableScan(m_mp));
+	Add(GPOS_NEW(m_mp) CXformDynamicGet2AppendTableScan(m_mp));
+	Add(GPOS_NEW(m_mp) CXformDynamicGet2ParallelAppendTableScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformDynamicIndexGet2DynamicIndexScan(m_mp));
 	Add(GPOS_NEW(m_mp) CXformImplementSequence(m_mp));
 	Add(GPOS_NEW(m_mp) CXformImplementConstTableGet(m_mp));

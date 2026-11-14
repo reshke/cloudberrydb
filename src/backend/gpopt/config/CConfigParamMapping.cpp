@@ -284,9 +284,18 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	 GPOS_WSZ_LIT(
 		 "Enable Eager Agg transform for pushing aggregate below an innerjoin.")},
 
+	{EopttraceEnableParallelAppendScan, &optimizer_enable_parallel_append,
+	 false,	 // m_negate_param
+	 GPOS_WSZ_LIT("Enable parallel append for scan/bitmap/index scan in partition tables.")},
+
 	{EopttraceDisableOrderedAgg, &optimizer_enable_orderedagg,
 	 true,	// m_negate_param
 	 GPOS_WSZ_LIT("Disable ordered aggregate plans.")},
+
+	{EopttraceDisablePresortedAgg, &optimizer_enable_presorted_agg,
+	 true,	// m_negate_param
+	 GPOS_WSZ_LIT("Disable sorting the input of order sensitive aggregates with "
+				  "ORDER BY on the segments, for aggregates without GROUP BY.")},
 
 	{EopttraceExpandFullJoin, &optimizer_expand_fulljoin,
 	 false,	 // m_negate_param
@@ -331,7 +340,22 @@ CConfigParamMapping::SConfigMappingElem CConfigParamMapping::m_elements[] = {
 	 false,	 // m_negate_param
 	 GPOS_WSZ_LIT(
 		 "Enable create window hash agg")},
-	
+
+	{EopttraceDisableStreamingHashAgg, &optimizer_use_streaming_hashagg,
+	 true,	// m_negate_param
+	 GPOS_WSZ_LIT(
+		 "Disable streaming hash agg in ORCA-generated local partial aggregations.")},
+
+	{EopttraceChildOptMemo, &optimizer_enable_child_opt_memo,
+	 false,	 // m_negate_param
+	 GPOS_WSZ_LIT(
+		 "Reuse the child contexts that the same request of a group expression reached under another context.")},
+
+	{EopttraceVerifyChildOptMemo, &optimizer_verify_child_opt_memo,
+	 false,	 // m_negate_param
+	 GPOS_WSZ_LIT(
+		 "Optimize the children of requests that could reuse child contexts and report differences.")},
+
 };
 
 //---------------------------------------------------------------------------
@@ -449,6 +473,8 @@ CConfigParamMapping::PackConfigParamInBitset(
 		// disable table scan if the corresponding GUC is turned off
 		traceflag_bitset->ExchangeSet(
 			GPOPT_DISABLE_XFORM_TF(CXform::ExfGet2TableScan));
+		traceflag_bitset->ExchangeSet(
+			GPOPT_DISABLE_XFORM_TF(CXform::ExfGet2ParallelTableScan));
 	}
 
 	if (!optimizer_enable_push_join_below_union_all)

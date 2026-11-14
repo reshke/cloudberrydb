@@ -152,6 +152,7 @@ CGroup::SContextLink::Equals(const SContextLink *pclink1,
 //---------------------------------------------------------------------------
 CGroup::CGroup(CMemoryPool *mp, BOOL fScalar)
 	: m_mp(mp),
+	  m_pmemo(nullptr),
 	  m_id(GPOPT_INVALID_GROUP_ID),
 	  m_fScalar(fScalar),
 	  m_pdrgpexprJoinKeysOuter(nullptr),
@@ -440,6 +441,26 @@ CGroup::PocInsert(COptimizationContext *poc)
 
 //---------------------------------------------------------------------------
 //	@function:
+//		CGroup::FLookupFinds
+//
+//	@doc:
+//		Check if looking up the requirements of a context of this group finds
+//		that context. If requirements change after their context was
+//		inserted, a group can hold several contexts with equal requirements,
+//		of which a lookup finds only one.
+//
+//---------------------------------------------------------------------------
+BOOL
+CGroup::FLookupFinds(COptimizationContext *poc)
+{
+	ShtAcc shta(Sht(), *poc);
+
+	return poc == shta.Find();
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
 //		CGroup::PgexprBest
 //
 //	@doc:
@@ -531,6 +552,25 @@ CGroup::SetState(EState estNewState)
 	GPOS_ASSERT(estNewState == (EState)(m_estate + 1));
 
 	m_estate = estNewState;
+}
+
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CGroup::SetMemo
+//
+//	@doc:
+//		Set containing memo reference;
+//
+//---------------------------------------------------------------------------
+void
+CGroup::SetMemo(CMemo *pmemo)
+{
+	GPOS_ASSERT(nullptr != pmemo);
+	GPOS_ASSERT(nullptr == m_pmemo &&
+				"Overwriting previously assigned memo reference");
+
+	m_pmemo = pmemo;
 }
 
 

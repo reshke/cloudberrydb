@@ -324,6 +324,15 @@ CTranslatorQueryToDXL::CheckUnsupportedNodeTypes(Query *query)
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
 				   GPOS_WSZ_LIT("Non-default collation"));
 	}
+
+	// ORCA does not support amcanorderbyop (KNN ordered index scans).
+	// Fall back to the PostgreSQL planner for queries whose ORDER BY
+	// contains an ordering operator (e.g., <-> for distance).
+	if (gpdb::HasOrderByOrderingOp(query))
+	{
+		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
+				   GPOS_WSZ_LIT("ORDER BY with ordering operator (amcanorderbyop)"));
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -437,7 +446,8 @@ CTranslatorQueryToDXL::CheckSupportedCmdType(Query *query)
 	}
 
 	static const SCmdNameElem unsupported_commands[] = {
-		{CMD_UTILITY, GPOS_WSZ_LIT("UTILITY command")}};
+		{CMD_UTILITY, GPOS_WSZ_LIT("UTILITY command")},
+		{CMD_MERGE, GPOS_WSZ_LIT("MERGE command")}};
 
 	const ULONG length = GPOS_ARRAY_SIZE(unsupported_commands);
 	for (ULONG ul = 0; ul < length; ul++)
@@ -613,7 +623,7 @@ CTranslatorQueryToDXL::TranslateSelectQueryToDXL()
 	// In Orca, we only keep range table entries for the base tables in the planned statement, but not for the view itself.
 	// Since permissions are only checked during ExecutorStart, we lose track of the permissions required for the view and the select goes through successfully.
 	// We therefore need to check permissions before we go into optimization for all RTEs, including the ones not explicitly referred in the query, e.g. views.
-	CTranslatorUtils::CheckRTEPermissions(m_query->rtable);
+	CTranslatorUtils::CheckRTEPermissions(m_query->rtable, m_query->rteperminfos);
 
 	if (m_query->hasForUpdate)
 	{
@@ -866,8 +876,11 @@ CTranslatorQueryToDXL::TranslateInsertQueryToDXL()
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
 				   GPOS_WSZ_LIT("Inserts with foreign tables"));
 	}
+	const RTEPermissionInfo *perminfo = gpdb::GetRTEPermissionInfo(
+		m_query->rteperminfos, rte);
+
 	CDXLTableDescr *table_descr = CTranslatorUtils::GetTableDescr(
-		m_mp, m_md_accessor, m_context->m_colid_counter, rte, m_query_id,
+		m_mp, m_md_accessor, m_context->m_colid_counter, rte, perminfo, m_query_id,
 		&m_context->m_has_distributed_tables);
 
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_descr->MDId());
@@ -1189,8 +1202,11 @@ CTranslatorQueryToDXL::TranslateDeleteQueryToDXL()
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
 				   GPOS_WSZ_LIT("Deletes with foreign tables"));
 	}
+	const RTEPermissionInfo *perminfo = gpdb::GetRTEPermissionInfo(
+		m_query->rteperminfos, rte);
+
 	CDXLTableDescr *table_descr = CTranslatorUtils::GetTableDescr(
-		m_mp, m_md_accessor, m_context->m_colid_counter, rte, m_query_id,
+		m_mp, m_md_accessor, m_context->m_colid_counter, rte, perminfo, m_query_id,
 		&m_context->m_has_distributed_tables);
 
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_descr->MDId());
@@ -1266,14 +1282,16 @@ CTranslatorQueryToDXL::TranslateUpdateQueryToDXL()
 	CDXLNode *query_dxlnode = TranslateSelectQueryToDXL();
 	const RangeTblEntry *rte = (RangeTblEntry *) gpdb::ListNth(
 		m_query->rtable, m_query->resultRelation - 1);
-
 	if (rte->relkind == 'f')
 	{
 		GPOS_RAISE(gpdxl::ExmaDXL, gpdxl::ExmiQuery2DXLUnsupportedFeature,
 				   GPOS_WSZ_LIT("Updates with foreign tables"));
 	}
+	const RTEPermissionInfo *perminfo = gpdb::GetRTEPermissionInfo(
+		m_query->rteperminfos, rte);
+
 	CDXLTableDescr *table_descr = CTranslatorUtils::GetTableDescr(
-		m_mp, m_md_accessor, m_context->m_colid_counter, rte, m_query_id,
+		m_mp, m_md_accessor, m_context->m_colid_counter, rte, perminfo, m_query_id,
 		&m_context->m_has_distributed_tables);
 
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_descr->MDId());
@@ -3274,7 +3292,9 @@ CTranslatorQueryToDXL::TranslateFromClauseToDXL(Node *node)
 			}
 			case RTE_RELATION:
 			{
-				return TranslateRTEToDXLLogicalGet(rte, rt_index,
+				const RTEPermissionInfo *perminfo = gpdb::GetRTEPermissionInfo(m_query->rteperminfos,
+																			   rte);
+				return TranslateRTEToDXLLogicalGet(rte, perminfo, rt_index,
 												   m_query_level);
 			}
 			case RTE_VALUES:
@@ -3362,6 +3382,7 @@ CTranslatorQueryToDXL::UnsupportedRTEKind(RTEKind rtekind)
 //---------------------------------------------------------------------------
 CDXLNode *
 CTranslatorQueryToDXL::TranslateRTEToDXLLogicalGet(const RangeTblEntry *rte,
+												   const RTEPermissionInfo *perminfo,
 												   ULONG rt_index,
 												   ULONG  //current_query_level
 )
@@ -3390,7 +3411,7 @@ CTranslatorQueryToDXL::TranslateRTEToDXLLogicalGet(const RangeTblEntry *rte,
 
 	// construct table descriptor for the scan node from the range table entry
 	CDXLTableDescr *dxl_table_descr = CTranslatorUtils::GetTableDescr(
-		m_mp, m_md_accessor, m_context->m_colid_counter, rte,
+		m_mp, m_md_accessor, m_context->m_colid_counter, rte, perminfo,
 		query_id_for_target_rel, &m_context->m_has_distributed_tables);
 
 	CDXLLogicalGet *dxl_op = nullptr;
@@ -4121,20 +4142,27 @@ CTranslatorQueryToDXL::TranslateJoinExprInFromToDXL(JoinExpr *join_expr)
 		{
 			continue;
 		}
-		GPOS_ASSERT(IsA(join_alias_node, Var) ||
-					IsA(join_alias_node, FuncExpr) ||
-					IsA(join_alias_node, CoalesceExpr));
-		Value *value = (Value *) lfirst(lc_col_name);
-		CHAR *col_name_char_array = strVal(value);
+		// A merged USING column is a plain Var when both inputs have the same
+		// type, a CoalesceExpr for a FULL JOIN, and the outer input coerced to
+		// the common type otherwise (FuncExpr, RelabelType, ...). Any
+		// expression the scalar translator understands is acceptable here;
+		// unsupported nodes still raise the regular "unsupported feature"
+		// exception from TranslateExprToDXL.
+		CHAR *col_name_char_array = strVal(lfirst(lc_col_name));
 
 		// create the DXL node holding the target list entry and add it to proj list
 		CDXLNode *project_elem_dxlnode = TranslateExprToDXLProject(
 			(Expr *) join_alias_node, col_name_char_array);
 		project_list_dxlnode->AddChild(project_elem_dxlnode);
 
-		if (IsA(join_alias_node, CoalesceExpr))
+		if (!IsA(join_alias_node, Var))
 		{
-			// add coalesce expression to the computed columns
+			// TranslateExprToDXLProject reuses the input colid for a plain
+			// Var but allocates a new one for any other expression, so the
+			// column only exists if the join computes it. Quals are left
+			// alone by flatten_join_alias_var_optimizer and still reference
+			// the merged column through the mapping loaded below, hence the
+			// projection is required and not merely an optimization.
 			project_elem_dxlnode->AddRef();
 			project_list_computed_cols_dxlnode->AddChild(project_elem_dxlnode);
 		}

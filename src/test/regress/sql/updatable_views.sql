@@ -437,6 +437,7 @@ DROP TABLE base_tbl CASCADE;
 
 CREATE USER regress_view_user1;
 CREATE USER regress_view_user2;
+CREATE USER regress_view_user3;
 
 SET SESSION AUTHORIZATION regress_view_user1;
 CREATE TABLE base_tbl(a int, b text, c float);
@@ -579,8 +580,187 @@ RESET SESSION AUTHORIZATION;
 
 DROP TABLE base_tbl CASCADE;
 
+-- security invoker view permissions
+
+SET SESSION AUTHORIZATION regress_view_user1;
+CREATE TABLE base_tbl(a int, b text, c float);
+INSERT INTO base_tbl VALUES (1, 'Row 1', 1.0);
+CREATE VIEW rw_view1 AS SELECT b AS bb, c AS cc, a AS aa FROM base_tbl;
+ALTER VIEW rw_view1 SET (security_invoker = true);
+INSERT INTO rw_view1 VALUES ('Row 2', 2.0, 2);
+GRANT SELECT ON rw_view1 TO regress_view_user2;
+GRANT UPDATE (bb,cc) ON rw_view1 TO regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+SELECT * FROM base_tbl; -- not allowed
+SELECT * FROM rw_view1; -- not allowed
+INSERT INTO base_tbl VALUES (3, 'Row 3', 3.0); -- not allowed
+INSERT INTO rw_view1 VALUES ('Row 3', 3.0, 3); -- not allowed
+UPDATE base_tbl SET a=a; -- not allowed
+UPDATE rw_view1 SET bb=bb, cc=cc; -- not allowed
+DELETE FROM base_tbl; -- not allowed
+DELETE FROM rw_view1; -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user1;
+GRANT SELECT ON base_tbl TO regress_view_user2;
+GRANT UPDATE (a,c) ON base_tbl TO regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+SELECT * FROM base_tbl; -- ok
+SELECT * FROM rw_view1; -- ok
+UPDATE base_tbl SET a=a, c=c; -- ok
+UPDATE base_tbl SET b=b; -- not allowed
+UPDATE rw_view1 SET cc=cc; -- ok
+UPDATE rw_view1 SET aa=aa; -- not allowed
+UPDATE rw_view1 SET bb=bb; -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user1;
+GRANT INSERT, DELETE ON base_tbl TO regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+INSERT INTO base_tbl VALUES (3, 'Row 3', 3.0); -- ok
+INSERT INTO rw_view1 VALUES ('Row 4', 4.0, 4); -- not allowed
+DELETE FROM base_tbl WHERE a=1; -- ok
+DELETE FROM rw_view1 WHERE aa=2; -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user1;
+REVOKE INSERT, DELETE ON base_tbl FROM regress_view_user2;
+GRANT INSERT, DELETE ON rw_view1 TO regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+INSERT INTO rw_view1 VALUES ('Row 4', 4.0, 4); -- not allowed
+DELETE FROM rw_view1 WHERE aa=2; -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user1;
+GRANT INSERT, DELETE ON base_tbl TO regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+INSERT INTO rw_view1 VALUES ('Row 4', 4.0, 4); -- ok
+DELETE FROM rw_view1 WHERE aa=2; -- ok
+SELECT * FROM base_tbl; -- ok
+
+RESET SESSION AUTHORIZATION;
+
+DROP TABLE base_tbl CASCADE;
+
+-- ordinary view on top of security invoker view permissions
+
+CREATE TABLE base_tbl(a int, b text, c float);
+INSERT INTO base_tbl VALUES (1, 'Row 1', 1.0);
+
+SET SESSION AUTHORIZATION regress_view_user1;
+CREATE VIEW rw_view1 AS SELECT b AS bb, c AS cc, a AS aa FROM base_tbl;
+ALTER VIEW rw_view1 SET (security_invoker = true);
+SELECT * FROM rw_view1;  -- not allowed
+UPDATE rw_view1 SET aa=aa;  -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user2;
+CREATE VIEW rw_view2 AS SELECT cc AS ccc, aa AS aaa, bb AS bbb FROM rw_view1;
+GRANT SELECT, UPDATE ON rw_view2 TO regress_view_user3;
+SELECT * FROM rw_view2;  -- not allowed
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+
+RESET SESSION AUTHORIZATION;
+
+GRANT SELECT ON base_tbl TO regress_view_user1;
+GRANT UPDATE (a, b) ON base_tbl TO regress_view_user1;
+
+SET SESSION AUTHORIZATION regress_view_user1;
+SELECT * FROM rw_view1; -- ok
+UPDATE rw_view1 SET aa=aa, bb=bb;  -- ok
+UPDATE rw_view1 SET cc=cc;  -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user2;
+SELECT * FROM rw_view2;  -- not allowed
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user3;
+SELECT * FROM rw_view2;  -- not allowed
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user1;
+GRANT SELECT ON rw_view1 TO regress_view_user2;
+GRANT UPDATE (bb, cc) ON rw_view1 TO regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+SELECT * FROM rw_view2;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user3;
+SELECT * FROM rw_view2;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+
+RESET SESSION AUTHORIZATION;
+
+GRANT SELECT ON base_tbl TO regress_view_user2;
+GRANT UPDATE (a, c) ON base_tbl TO regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+SELECT * FROM rw_view2;  -- ok
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+UPDATE rw_view2 SET ccc=ccc;  -- ok
+
+SET SESSION AUTHORIZATION regress_view_user3;
+SELECT * FROM rw_view2;  -- not allowed
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+UPDATE rw_view2 SET ccc=ccc;  -- not allowed
+
+RESET SESSION AUTHORIZATION;
+
+GRANT SELECT ON base_tbl TO regress_view_user3;
+GRANT UPDATE (a, c) ON base_tbl TO regress_view_user3;
+
+SET SESSION AUTHORIZATION regress_view_user3;
+SELECT * FROM rw_view2;  -- ok
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+UPDATE rw_view2 SET ccc=ccc;  -- ok
+
+RESET SESSION AUTHORIZATION;
+
+REVOKE SELECT, UPDATE ON base_tbl FROM regress_view_user1;
+
+SET SESSION AUTHORIZATION regress_view_user1;
+SELECT * FROM rw_view1;  -- not allowed
+UPDATE rw_view1 SET aa=aa;  -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user2;
+SELECT * FROM rw_view2;  -- ok
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+UPDATE rw_view2 SET ccc=ccc;  -- ok
+
+SET SESSION AUTHORIZATION regress_view_user3;
+SELECT * FROM rw_view2;  -- ok
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+UPDATE rw_view2 SET ccc=ccc;  -- ok
+
+RESET SESSION AUTHORIZATION;
+
+REVOKE SELECT, UPDATE ON base_tbl FROM regress_view_user2;
+
+SET SESSION AUTHORIZATION regress_view_user2;
+SELECT * FROM rw_view2;  -- not allowed
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+UPDATE rw_view2 SET ccc=ccc;  -- not allowed
+
+SET SESSION AUTHORIZATION regress_view_user3;
+SELECT * FROM rw_view2;  -- ok
+UPDATE rw_view2 SET aaa=aaa;  -- not allowed
+UPDATE rw_view2 SET bbb=bbb;  -- not allowed
+UPDATE rw_view2 SET ccc=ccc;  -- ok
+
+RESET SESSION AUTHORIZATION;
+
+DROP TABLE base_tbl CASCADE;
+
 DROP USER regress_view_user1;
 DROP USER regress_view_user2;
+DROP USER regress_view_user3;
 
 -- column defaults
 
@@ -676,6 +856,7 @@ CREATE VIEW rw_view1 AS
 
 INSERT INTO rw_view1 VALUES (null, null, 1.1, null); -- should fail
 INSERT INTO rw_view1 (s, c, a) VALUES (null, null, 1.1); -- should fail
+INSERT INTO rw_view1 (s, c, a) VALUES (default, default, 1.1); -- should fail
 INSERT INTO rw_view1 (a) VALUES (1.1) RETURNING a, s, c; -- OK
 UPDATE rw_view1 SET s = s WHERE a = 1.1; -- should fail
 UPDATE rw_view1 SET a = 1.05 WHERE a = 1.1 RETURNING s; -- OK
@@ -1116,6 +1297,38 @@ EXPLAIN (costs off) DELETE FROM rw_view2 WHERE NOT snoop(person);
 
 DROP TABLE base_tbl CASCADE;
 
+-- INSERT .. ON CONFLICT through nested views: an inner security barrier
+-- view's quals are checked before an outer view's, as they are in a scan,
+-- so the outer view's quals are never evaluated against a row the inner
+-- view hides, only against a row it shows
+CREATE TABLE uv_upsert_hide_tab (id int PRIMARY KEY, secret int, vis boolean);
+INSERT INTO uv_upsert_hide_tab VALUES (1, 111, false), (2, 333, true);
+CREATE FUNCTION uv_upsert_hide_leak(x int) RETURNS boolean
+  LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'leaked %', x; END $$;
+
+CREATE VIEW uv_upsert_leak_inner WITH (security_barrier) AS
+  SELECT * FROM uv_upsert_hide_tab WHERE vis;
+CREATE VIEW uv_upsert_leak_outer WITH (security_barrier) AS
+  SELECT * FROM uv_upsert_leak_inner WHERE uv_upsert_hide_leak(secret);
+
+INSERT INTO uv_upsert_leak_outer VALUES (1, 0, true)
+  ON CONFLICT (id) DO UPDATE SET secret = 0 RETURNING *;   -- fails on inner view
+INSERT INTO uv_upsert_leak_outer VALUES (2, 0, true)
+  ON CONFLICT (id) DO UPDATE SET secret = 0 RETURNING *;   -- outer quals do run
+
+-- The same holds for a plain outer view
+CREATE VIEW uv_upsert_leak_plain_outer AS
+  SELECT * FROM uv_upsert_leak_inner WHERE uv_upsert_hide_leak(secret);
+
+INSERT INTO uv_upsert_leak_plain_outer VALUES (1, 0, true)
+  ON CONFLICT (id) DO UPDATE SET secret = 0 RETURNING *;   -- fails on inner view
+INSERT INTO uv_upsert_leak_plain_outer VALUES (2, 0, true)
+  ON CONFLICT (id) DO UPDATE SET secret = 0 RETURNING *;   -- outer quals do run
+
+DROP VIEW uv_upsert_leak_plain_outer, uv_upsert_leak_outer, uv_upsert_leak_inner;
+DROP FUNCTION uv_upsert_hide_leak(int);
+DROP TABLE uv_upsert_hide_tab;
+
 -- security barrier view on top of table with rules
 
 CREATE TABLE base_tbl(id int PRIMARY KEY, data text, deleted boolean);
@@ -1302,6 +1515,23 @@ DROP TABLE t2;
 DROP TABLE t1;
 
 --
+-- Test sub-select in nested security barrier views, per bug #17972
+--
+CREATE TABLE t1 (a int);
+CREATE VIEW v1 WITH (security_barrier = true) AS
+  SELECT * FROM t1;
+CREATE RULE v1_upd_rule AS ON UPDATE TO v1 DO INSTEAD
+  UPDATE t1 SET a = NEW.a WHERE a = OLD.a;
+CREATE VIEW v2 WITH (security_barrier = true) AS
+  SELECT * FROM v1 WHERE EXISTS (SELECT 1);
+
+EXPLAIN (COSTS OFF) UPDATE v2 SET a = 1;
+
+DROP VIEW v2;
+DROP VIEW v1;
+DROP TABLE t1;
+
+--
 -- Test CREATE OR REPLACE VIEW turning a non-updatable view into an
 -- auto-updatable view and adding check options in a single step
 --
@@ -1406,6 +1636,176 @@ select * from uv_iocu_tab;
 
 drop view uv_iocu_view;
 drop table uv_iocu_tab;
+
+-- INSERT .. ON CONFLICT DO UPDATE must not read or modify an existing row
+-- that is not visible through the view, security barrier or not
+create table uv_upsert_hide_tab (id int primary key, secret int, vis boolean);
+insert into uv_upsert_hide_tab values (1, 111, false), (2, 222, true);
+create view uv_upsert_barrier with (security_barrier) as
+  select * from uv_upsert_hide_tab where vis;
+create function uv_upsert_hide_leak(x int) returns boolean
+  language plpgsql as $$ begin raise exception 'leaked %', x; end $$;
+
+-- The conflict action's WHERE clause must not see the hidden row
+insert into uv_upsert_barrier values (1, 0, true)
+  on conflict (id) do update set secret = 0
+  where uv_upsert_hide_leak(uv_upsert_barrier.secret);         -- fails
+
+-- Nor may the row be written outright
+insert into uv_upsert_barrier values (1, 0, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails
+select * from uv_upsert_hide_tab order by id;
+
+-- DO NOTHING neither reads nor modifies the row, so it is unaffected
+insert into uv_upsert_barrier values (1, 0, true) on conflict (id) do nothing;
+
+-- The conflict action can still update and return a row that is visible
+-- through the view
+insert into uv_upsert_barrier values (2, 0, true)
+  on conflict (id) do update set secret = 333 returning *;
+
+-- Turning a visible row into one the view hides is allowed, as it is for
+-- UPDATE
+insert into uv_upsert_barrier values (2, 0, true)
+  on conflict (id) do update set vis = false returning *;
+select * from uv_upsert_hide_tab order by id;
+update uv_upsert_hide_tab set vis = true where id = 2;
+
+-- The same through a plain view
+create view uv_upsert_plain as
+  select * from uv_upsert_hide_tab where vis;
+insert into uv_upsert_plain values (1, 0, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails
+
+-- and through a view with a CHECK OPTION, even for a DO UPDATE that would
+-- make the hidden row visible: the CHECK OPTION concerns the new row, the
+-- conflict check the existing one
+create view uv_upsert_checkopt as
+  select * from uv_upsert_hide_tab where vis with check option;
+insert into uv_upsert_checkopt values (1, 0, true)
+  on conflict (id) do update set vis = true returning *;   -- fails
+select * from uv_upsert_hide_tab order by id;
+
+-- and through a view whose WHERE clause contains a sublink, though the
+-- INSERT itself contains none
+create table uv_upsert_vis_ids (id int primary key);
+insert into uv_upsert_vis_ids values (2);
+create view uv_upsert_sublink as
+  select * from uv_upsert_hide_tab
+  where id in (select id from uv_upsert_vis_ids);
+
+insert into uv_upsert_sublink values (1, 0, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails
+insert into uv_upsert_sublink values (2, 0, true)
+  on conflict (id) do update set secret = 444 returning *; -- ok
+
+drop view uv_upsert_sublink,
+          uv_upsert_checkopt,
+          uv_upsert_plain,
+          uv_upsert_barrier;
+drop function uv_upsert_hide_leak(int);
+drop table uv_upsert_hide_tab, uv_upsert_vis_ids;
+
+-- INSERT .. ON CONFLICT through nested views: the conflicting row must be
+-- visible through every one of them, security barrier or not, whichever
+-- level hides it
+create table uv_upsert_hide_tab (id int primary key, secret int, vis boolean);
+insert into uv_upsert_hide_tab values (1, 111, false), (2, 333, true);
+create view uv_upsert_barrier with (security_barrier) as
+  select * from uv_upsert_hide_tab where vis;
+
+create view uv_upsert_plain_over_barrier as select * from uv_upsert_barrier where secret > 0;
+insert into uv_upsert_plain_over_barrier values (1, 1, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails on inner view
+
+create view uv_upsert_plain_shows as
+  select * from uv_upsert_hide_tab where secret > 0;
+create view uv_upsert_barrier_over_plain with (security_barrier) as
+  select * from uv_upsert_plain_shows where vis;
+insert into uv_upsert_barrier_over_plain values (1, 1, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails on outer view
+
+-- The same when the inner view is plain, when the outer view has no quals
+-- of its own or a LOCAL check option, and across three levels
+create view uv_upsert_plain_hides as
+  select * from uv_upsert_hide_tab where vis;
+
+create view uv_upsert_barrier_over_hides with (security_barrier) as
+  select * from uv_upsert_plain_hides where secret > 0;
+insert into uv_upsert_barrier_over_hides values (1, 1, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails on inner view
+insert into uv_upsert_barrier_over_hides values (2, 1, true)
+  on conflict (id) do update set secret = 444 returning *; -- ok
+
+create view uv_upsert_barrier_noquals_over_hides with (security_barrier) as
+  select * from uv_upsert_plain_hides;
+insert into uv_upsert_barrier_noquals_over_hides values (1, 1, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails on inner view
+
+create view uv_upsert_wco_over_hides as
+  select * from uv_upsert_plain_hides where secret > 0 with local check option;
+insert into uv_upsert_wco_over_hides values (1, 1, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails on inner view
+
+create view uv_upsert_mid as
+  select * from uv_upsert_plain_hides where secret > 0;
+create view uv_upsert_barrier_over_mid with (security_barrier) as
+  select * from uv_upsert_mid;
+insert into uv_upsert_barrier_over_mid values (1, 1, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails on innermost view
+
+select * from uv_upsert_hide_tab order by id;
+
+drop view uv_upsert_barrier_over_mid,
+          uv_upsert_mid,
+          uv_upsert_wco_over_hides,
+          uv_upsert_barrier_noquals_over_hides,
+          uv_upsert_barrier_over_hides,
+          uv_upsert_plain_hides,
+          uv_upsert_barrier_over_plain,
+          uv_upsert_plain_shows,
+          uv_upsert_plain_over_barrier,
+          uv_upsert_barrier;
+drop table uv_upsert_hide_tab;
+
+-- A CASCADED CHECK OPTION must still reach the inner view's quals when the
+-- outer view also gets a conflict check
+create table uv_upsert_casc_tab (id int primary key, a int, b int);
+insert into uv_upsert_casc_tab values (1, 1, 1);
+create view uv_upsert_casc_inner as select * from uv_upsert_casc_tab where a > 0;
+create view uv_upsert_casc_outer as
+  select * from uv_upsert_casc_inner where b > 0 with cascaded check option;
+
+insert into uv_upsert_casc_outer values (1, 5, 5)
+  on conflict (id) do update set a = -1;  -- fails on inner view's check option
+select * from uv_upsert_casc_tab;
+
+-- and the conflict check applies to the inner view too
+insert into uv_upsert_casc_tab values (3, -1, 1);
+insert into uv_upsert_casc_outer values (3, 1, 1)
+  on conflict (id) do update set a = 1 returning *;  -- fails on inner view
+
+drop view uv_upsert_casc_outer, uv_upsert_casc_inner;
+drop table uv_upsert_casc_tab;
+
+-- INSERT .. ON CONFLICT through a view on a partitioned table: the conflict
+-- check must be translated for a partition whose columns are not in the
+-- parent's order
+create table uv_upsert_pt (id int primary key, secret int, vis boolean)
+  partition by range (id);
+create table uv_upsert_pt1 (vis boolean, secret int, id int not null) distributed by (id);
+alter table uv_upsert_pt attach partition uv_upsert_pt1 for values from (0) to (100);
+insert into uv_upsert_pt values (1, 111, false), (2, 222, true);
+create view uv_upsert_ptv as select * from uv_upsert_pt where vis;
+
+insert into uv_upsert_ptv values (1, 0, true)
+  on conflict (id) do update set secret = 0 returning *;   -- fails
+insert into uv_upsert_ptv values (2, 0, true)
+  on conflict (id) do update set secret = 333 returning *; -- ok
+select * from uv_upsert_pt order by id;
+
+drop view uv_upsert_ptv;
+drop table uv_upsert_pt;
 
 -- Test whole-row references to the view
 create table uv_iocu_tab (a int unique, b text);

@@ -21,6 +21,7 @@
 
 #include "postgres.h"
 
+#include "cdb/cdbllize.h"
 #include "cdb/cdbmutate.h"		/* apply_shareinput */
 #include "cdb/cdbplan.h"
 #include "cdb/cdbvars.h"
@@ -34,6 +35,7 @@
 #include "optimizer/planner.h"
 #include "optimizer/tlist.h"
 #include "optimizer/transform.h"
+#include "optimizer/walkers.h"
 #include "parser/parse_collate.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
@@ -53,6 +55,7 @@ static Plan *remove_redundant_results(PlannerInfo *root, Plan *plan);
 static Node *remove_redundant_results_mutator(Node *node, void *);
 static bool can_replace_tlist(Plan *plan);
 static Node *push_down_expr_mutator(Node *node, List *child_tlist);
+static bool set_plan_param_bitmaps_walker(Node *node, void *context);
 
 /*
  * Logging of optimization outcome
@@ -353,6 +356,20 @@ optimize_query(Query *parse, int cursorOptions, ParamListInfo boundParams, Optim
 	result->planTree = remove_redundant_results(root, result->planTree);
 
 	/*
+	 * Parameter-change rescans depend on the final plan's allParam bitmaps.
+	 * Compute them after all plan transformations, for every subplan as well
+	 * as the main tree, so no translator can leave incomplete dependencies.
+	 */
+	{
+		plan_tree_base_prefix ctx;
+
+		ctx.node = (Node *) root;
+		foreach(lp, glob->subplans)
+			set_plan_param_bitmaps_walker((Node *) lfirst(lp), &ctx);
+		set_plan_param_bitmaps_walker((Node *) result->planTree, &ctx);
+	}
+
+	/*
 	 * To save on memory, and on the network bandwidth when the plan is
 	 * dispatched to QEs, strip all subquery RTEs of the original Query
 	 * objects.
@@ -405,7 +422,57 @@ optimize_query(Query *parse, int cursorOptions, ParamListInfo boundParams, Optim
 	result->oneoffPlan = glob->oneoffPlan;
 	result->transientPlan = glob->transientPlan;
 
+	result->queryId = parse->queryId;
+	result->stmt_location = parse->stmt_location;
+	result->stmt_len = parse->stmt_len;
+
 	return result;
+}
+
+/*
+ * Set the extParam/allParam bitmapsets of every Plan node to the set of
+ * PARAM_EXEC params referenced in the node's subtree.
+ *
+ * SubPlan bodies are not entered here (extract_nodes_plan() collects the
+ * params of a SubPlan's testexpr and args, but does not descend into the
+ * body); the caller walks each entry of glob->subplans separately instead,
+ * so every plan node in the tree gets its bitmaps set exactly once.
+ */
+static bool
+set_plan_param_bitmaps_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (is_plan_node(node))
+	{
+		Plan	   *plan = (Plan *) node;
+		List	   *params;
+		Bitmapset  *bms = NULL;
+		ListCell   *lc;
+
+		params = extract_nodes_plan(plan, T_Param,
+									true /* descendIntoSubqueries */);
+		foreach(lc, params)
+		{
+			Param	   *param = (Param *) lfirst(lc);
+
+			/*
+			 * extParam/allParam must contain only PARAM_EXEC paramids (see
+			 * plannodes.h); PARAM_EXTERN params live in a separate numbering
+			 * space and never change during execution.
+			 */
+			if (param->paramkind == PARAM_EXEC)
+				bms = bms_add_member(bms, param->paramid);
+		}
+		list_free(params);
+
+		plan->extParam = bms;
+		plan->allParam = bms;
+	}
+
+	return plan_tree_walker(node, set_plan_param_bitmaps_walker, context,
+							false /* recurse_into_subplans */);
 }
 
 /*
@@ -545,6 +612,10 @@ push_down_expr_mutator(Node *node, List *child_tlist)
 			{
 				((Const *) child_tle->expr)->consttypmod = ((Var *) node)->vartypmod;
 			}
+			else if (IsA(child_tle->expr, Var))
+			{
+				((Var *) child_tle->expr)->vartypmod = ((Var *) node)->vartypmod;
+			}
 
 			return (Node *) child_tle->expr;
 		}
@@ -671,6 +742,7 @@ transformGroupedWindows(Node *node, void *context)
 
 		/* Core of subquery input table expression: */
 		subq->rtable = qry->rtable; /* before windowing */
+		subq->rteperminfos = qry->rteperminfos; /* before windowing */
 		subq->jointree = qry->jointree; /* before windowing */
 		subq->targetList = NIL;		/* fill in later */
 
@@ -703,10 +775,10 @@ transformGroupedWindows(Node *node, void *context)
 		rte->alias = NULL;			/* fill in later */
 		rte->eref = NULL;			/* fill in later */
 		rte->inFromCl = true;
-		rte->requiredPerms = ACL_SELECT;
 
 		/*
-		 * Default? rte->inh = 0; rte->checkAsUser = 0;
+		 * Subquery RTEs do not need RTEPermissionInfo.  Permission checks
+		 * are performed on the base tables within the subquery itself.
 		 */
 
 		/*
@@ -729,6 +801,7 @@ transformGroupedWindows(Node *node, void *context)
 
 		/* Core of outer query input table expression: */
 		qry->rtable = list_make1(rte);
+		qry->rteperminfos = NIL;
 		qry->jointree = (FromExpr *) makeNode(FromExpr);
 		qry->jointree->fromlist = list_make1(ref);
 		qry->jointree->quals = NULL;

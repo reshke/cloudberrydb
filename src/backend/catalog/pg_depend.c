@@ -3,7 +3,7 @@
  * pg_depend.c
  *	  routines to support manipulation of the pg_depend relation
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,19 +17,26 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/table.h"
+#include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_extension.h"
+#include "catalog/pg_type.h"
 #include "commands/extension.h"
 #include "miscadmin.h"
+#include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 
-static bool isObjectPinned(const ObjectAddress *object, Relation rel);
+static bool isObjectPinned(const ObjectAddress *object);
+static void dependencyLockAndCheckType(Oid typeOid);
 
 
 /*
@@ -69,8 +76,11 @@ recordMultipleDependencies(const ObjectAddress *depender,
 		return;					/* nothing to do */
 
 	/*
-	 * During bootstrap, do nothing since pg_depend may not exist yet. initdb
-	 * will fill in appropriate pg_depend entries after bootstrap.
+	 * During bootstrap, do nothing since pg_depend may not exist yet.
+	 *
+	 * Objects created during bootstrap are most likely pinned, and the few
+	 * that are not do not have dependencies on each other, so that there
+	 * would be no need to make a pg_depend entry anyway.
 	 */
 	if (IsBootstrapProcessingMode())
 		return;
@@ -99,8 +109,15 @@ recordMultipleDependencies(const ObjectAddress *depender,
 		 * need to record dependencies on it.  This saves lots of space in
 		 * pg_depend, so it's worth the time taken to check.
 		 */
-		if (isObjectPinned(referenced, dependDesc))
+		if (isObjectPinned(referenced))
 			continue;
+
+		/*
+		 * Keep referenced types stable until this dependency is committed.
+		 * DROP and ALTER TYPE take an exclusive lock on the same object.
+		 */
+		if (referenced->classId == TypeRelationId)
+			dependencyLockAndCheckType(referenced->objectId);
 
 		if (slot_init_count < max_slots)
 		{
@@ -177,7 +194,7 @@ recordMultipleDependencies(const ObjectAddress *depender,
  * of the current extension.  In the latter case we can skip checking whether
  * it is already a member of any extension.
  *
- * Note: isReplace = true is typically used when updating a object in
+ * Note: isReplace = true is typically used when updating an object in
  * CREATE OR REPLACE and similar commands.  We used to allow the target
  * object to not already be an extension member, instead silently absorbing
  * it into the current extension.  However, this was both error-prone
@@ -463,8 +480,6 @@ changeDependencyFor(Oid classId, Oid objectId,
 	bool		oldIsPinned;
 	bool		newIsPinned;
 
-	depRel = table_open(DependRelationId, RowExclusiveLock);
-
 	/*
 	 * Check to see if either oldRefObjectId or newRefObjectId is pinned.
 	 * Pinned objects should not have any dependency entries pointing to them,
@@ -475,16 +490,14 @@ changeDependencyFor(Oid classId, Oid objectId,
 	objAddr.objectId = oldRefObjectId;
 	objAddr.objectSubId = 0;
 
-	oldIsPinned = isObjectPinned(&objAddr, depRel);
+	oldIsPinned = isObjectPinned(&objAddr);
 
 	objAddr.objectId = newRefObjectId;
 
-	newIsPinned = isObjectPinned(&objAddr, depRel);
+	newIsPinned = isObjectPinned(&objAddr);
 
 	if (oldIsPinned)
 	{
-		table_close(depRel, RowExclusiveLock);
-
 		/*
 		 * If both are pinned, we need do nothing.  However, return 1 not 0,
 		 * else callers will think this is an error case.
@@ -503,6 +516,11 @@ changeDependencyFor(Oid classId, Oid objectId,
 
 		return 1;
 	}
+
+	if (!newIsPinned && refClassId == TypeRelationId)
+		dependencyLockAndCheckType(newRefObjectId);
+
+	depRel = table_open(DependRelationId, RowExclusiveLock);
 
 	/* There should be existing dependency record(s), so search. */
 	ScanKeyInit(&key[0],
@@ -638,7 +656,7 @@ changeDependenciesOn(Oid refClassId, Oid oldRefObjectId,
 	objAddr.objectId = oldRefObjectId;
 	objAddr.objectSubId = 0;
 
-	if (isObjectPinned(&objAddr, depRel))
+	if (isObjectPinned(&objAddr))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot remove dependency on %s because it is a system object",
@@ -650,7 +668,7 @@ changeDependenciesOn(Oid refClassId, Oid oldRefObjectId,
 	 */
 	objAddr.objectId = newRefObjectId;
 
-	newIsPinned = isObjectPinned(&objAddr, depRel);
+	newIsPinned = isObjectPinned(&objAddr);
 
 	/* Now search for dependency records */
 	ScanKeyInit(&key[0],
@@ -698,50 +716,65 @@ changeDependenciesOn(Oid refClassId, Oid oldRefObjectId,
  * isObjectPinned()
  *
  * Test if an object is required for basic database functionality.
- * Caller must already have opened pg_depend.
  *
  * The passed subId, if any, is ignored; we assume that only whole objects
  * are pinned (and that this implies pinning their components).
  */
 static bool
-isObjectPinned(const ObjectAddress *object, Relation rel)
+isObjectPinned(const ObjectAddress *object)
 {
-	bool		ret = false;
+	return IsPinnedObject(object->classId, object->objectId);
+}
+
+
+/*
+ * Lock a referenced type while adding or changing a dependency on it.
+ *
+ * This is the type-specific part of PostgreSQL's dependencyLockAndCheckObject.
+ * The rowtype ALTER checks rely on the referencing transaction holding this
+ * lock, including when the type occurs only inside a stored expression.
+ */
+static void
+dependencyLockAndCheckType(Oid typeOid)
+{
+	LOCKTAG		tag;
+	Relation	rel;
 	SysScanDesc scan;
-	HeapTuple	tup;
-	ScanKeyData key[2];
+	ScanKeyData skey;
+	HeapTuple	tuple;
 
-	ScanKeyInit(&key[0],
-				Anum_pg_depend_refclassid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(object->classId));
+	/* Pinned types cannot be dropped; callers have already skipped them. */
+	Assert(!IsPinnedObject(TypeRelationId, typeOid));
 
-	ScanKeyInit(&key[1],
-				Anum_pg_depend_refobjid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(object->objectId));
+	SET_LOCKTAG_OBJECT(tag, MyDatabaseId, TypeRelationId, typeOid, 0);
+	if (LockOrStrongerHeldByMe(&tag, AccessShareLock))
+		return;
 
-	scan = systable_beginscan(rel, DependReferenceIndexId, true,
-							  NULL, 2, key);
+	LockDatabaseObject(TypeRelationId, typeOid, 0, AccessShareLock);
+
+	/* LockDatabaseObject processes invalidations after any wait. */
+	if (SearchSysCacheExists1(TYPEOID, ObjectIdGetDatum(typeOid)))
+		return;
 
 	/*
-	 * Since we won't generate additional pg_depend entries for pinned
-	 * objects, there can be at most one entry referencing a pinned object.
-	 * Hence, it's sufficient to look at the first returned tuple; we don't
-	 * need to loop.
+	 * A type created by the current command might not be visible in the
+	 * syscache yet.  SnapshotSelf also sees those pg_type tuples.
 	 */
-	tup = systable_getnext(scan);
-	if (HeapTupleIsValid(tup))
-	{
-		Form_pg_depend foundDep = (Form_pg_depend) GETSTRUCT(tup);
-
-		if (foundDep->deptype == DEPENDENCY_PIN)
-			ret = true;
-	}
+	rel = table_open(TypeRelationId, AccessShareLock);
+	ScanKeyInit(&skey,
+				Anum_pg_type_oid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(typeOid));
+	scan = systable_beginscan(rel, TypeOidIndexId, true,
+							  SnapshotSelf, 1, &skey);
+	tuple = systable_getnext(scan);
+	if (!HeapTupleIsValid(tuple))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("referenced type was concurrently dropped")));
 
 	systable_endscan(scan);
-
-	return ret;
+	table_close(rel, AccessShareLock);
 }
 
 
@@ -837,6 +870,77 @@ getAutoExtensionsOfObject(Oid classId, Oid objectId)
 		if (depform->refclassid == ExtensionRelationId &&
 			depform->deptype == DEPENDENCY_AUTO_EXTENSION)
 			result = lappend_oid(result, depform->refobjid);
+	}
+
+	systable_endscan(scan);
+
+	table_close(depRel, AccessShareLock);
+
+	return result;
+}
+
+/*
+ * Look up a type belonging to an extension.
+ *
+ * Returns the type's OID, or InvalidOid if not found.
+ *
+ * Notice that the type is specified by name only, without a schema.
+ * That's because this will typically be used by relocatable extensions
+ * which can't make a-priori assumptions about which schema their objects
+ * are in.  As long as the extension only defines one type of this name,
+ * the answer is unique anyway.
+ *
+ * We might later add the ability to look up functions, operators, etc.
+ */
+Oid
+getExtensionType(Oid extensionOid, const char *typname)
+{
+	Oid			result = InvalidOid;
+	Relation	depRel;
+	ScanKeyData key[3];
+	SysScanDesc scan;
+	HeapTuple	tup;
+
+	depRel = table_open(DependRelationId, AccessShareLock);
+
+	ScanKeyInit(&key[0],
+				Anum_pg_depend_refclassid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(ExtensionRelationId));
+	ScanKeyInit(&key[1],
+				Anum_pg_depend_refobjid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(extensionOid));
+	ScanKeyInit(&key[2],
+				Anum_pg_depend_refobjsubid,
+				BTEqualStrategyNumber, F_INT4EQ,
+				Int32GetDatum(0));
+
+	scan = systable_beginscan(depRel, DependReferenceIndexId, true,
+							  NULL, 3, key);
+
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_depend depform = (Form_pg_depend) GETSTRUCT(tup);
+
+		if (depform->classid == TypeRelationId &&
+			depform->deptype == DEPENDENCY_EXTENSION)
+		{
+			Oid			typoid = depform->objid;
+			HeapTuple	typtup;
+
+			typtup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typoid));
+			if (!HeapTupleIsValid(typtup))
+				continue;		/* should we throw an error? */
+			if (strcmp(NameStr(((Form_pg_type) GETSTRUCT(typtup))->typname),
+					   typname) == 0)
+			{
+				result = typoid;
+				ReleaseSysCache(typtup);
+				break;			/* no need to keep searching */
+			}
+			ReleaseSysCache(typtup);
+		}
 	}
 
 	systable_endscan(scan);
@@ -981,7 +1085,7 @@ getIdentitySequence(Oid relid, AttrNumber attnum, bool missing_ok)
 
 	if (list_length(seqlist) > 1)
 		elog(ERROR, "more than one owned sequence found");
-	else if (list_length(seqlist) < 1)
+	else if (seqlist == NIL)
 	{
 		if (missing_ok)
 			return InvalidOid;

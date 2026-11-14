@@ -72,6 +72,7 @@
 #include "naucrates/base/IDatumOid.h"
 #include "naucrates/exception.h"
 #include "naucrates/md/CMDArrayCoerceCastGPDB.h"
+#include "naucrates/dxl/gpdb_types.h"
 #include "naucrates/md/CMDIdGPDB.h"
 #include "naucrates/md/CMDIdScCmp.h"
 #include "naucrates/md/IMDAggregate.h"
@@ -976,6 +977,130 @@ CUtils::FHasCTEAnchor(CExpression *pexpr)
 	}
 
 	return false;
+}
+
+// True if the distribution is replicated-like.
+static BOOL
+FReplicatedLikeDistribution(CDistributionSpec::EDistributionType edt)
+{
+	return (CDistributionSpec::EdtStrictReplicated == edt ||
+			CDistributionSpec::EdtTaintedReplicated == edt ||
+			CDistributionSpec::EdtUniversal == edt);
+}
+
+struct SCTEInfo
+{
+	ULONG cteId;
+	ULONG sliceId;
+
+	SCTEInfo(ULONG cte_id, ULONG slice_id) : cteId(cte_id), sliceId(slice_id)
+	{
+	}
+};
+
+typedef CDynamicPtrArray<SCTEInfo, CleanupDelete<SCTEInfo> > CTEInfoArray;
+
+// Walk the physical tree, recording the slice id of every replicated
+// CTE Producer and every CTE Consumer. Slices are delimited by Motion
+// nodes: each non-scalar child of a Motion lives in a fresh slice --
+// same motId-stack idea as in apply_shareinput_xslice.
+static void
+CollectCTESlices(CMemoryPool *mp, CExpression *pexpr, ULONG curSlice,
+				 ULONG *pNextSlice, CTEInfoArray *prodInfos,
+				 CTEInfoArray *consInfos)
+{
+	GPOS_CHECK_STACK_SIZE;
+	GPOS_ASSERT(nullptr != pexpr);
+
+	COperator *pop = pexpr->Pop();
+
+	if (COperator::EopPhysicalCTEProducer == pop->Eopid())
+	{
+		// Producer's distribution comes from its only child -- inspect
+		// it there. Skip non-replicated Producers; they cannot trigger
+		// the cross-slice issue we are checking for.
+		GPOS_ASSERT(1 == pexpr->Arity());
+		CExpression *pexprChild = (*pexpr)[0];
+		CDrvdPropPlan *pdpplan =
+			CDrvdPropPlan::Pdpplan(pexprChild->PdpDerive());
+
+		if (FReplicatedLikeDistribution(pdpplan->Pds()->Edt()))
+		{
+			prodInfos->Append(GPOS_NEW(mp) SCTEInfo(
+				CPhysicalCTEProducer::PopConvert(pop)->UlCTEId(), curSlice));
+		}
+	}
+	else if (COperator::EopPhysicalCTEConsumer == pop->Eopid())
+	{
+		// Consumer is a leaf -- record (cteId, curSlice) and let the
+		// caller decide later, once the whole tree has been walked.
+		consInfos->Append(GPOS_NEW(mp) SCTEInfo(
+			CPhysicalCTEConsumer::PopConvert(pop)->UlCTEId(), curSlice));
+	}
+
+	BOOL isMotion = CUtils::FPhysicalMotion(pop);
+
+	for (ULONG ul = 0; ul < pexpr->Arity(); ul++)
+	{
+		CExpression *pexprChild = (*pexpr)[ul];
+
+		if (pexprChild->Pop()->FScalar())
+		{
+			continue;
+		}
+
+		ULONG childSlice = curSlice;
+		if (isMotion)
+		{
+			(*pNextSlice)++;
+			childSlice = *pNextSlice;
+		}
+
+		CollectCTESlices(mp, pexprChild, childSlice, pNextSlice, prodInfos,
+						 consInfos);
+	}
+}
+
+static BOOL
+FFoundCrossSlice(const CTEInfoArray *consInfos, const CTEInfoArray *prodInfos)
+{
+	for (ULONG ic = 0; ic < consInfos->Size(); ic++)
+	{
+		SCTEInfo *cons = (*consInfos)[ic];
+
+		for (ULONG ip = 0; ip < prodInfos->Size(); ip++)
+		{
+			SCTEInfo *prod = (*prodInfos)[ip];
+			if (prod->cteId == cons->cteId && prod->sliceId != cons->sliceId)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+BOOL
+CUtils::FHasCrossSliceReplicatedCTEConsumer(CMemoryPool *mp, CExpression *pexpr)
+{
+	if (NULL == pexpr)
+	{
+		return false;
+	}
+
+	CTEInfoArray *prodInfos = GPOS_NEW(mp) CTEInfoArray(mp);
+	CTEInfoArray *consInfos = GPOS_NEW(mp) CTEInfoArray(mp);
+	ULONG nextSlice = 0;
+
+	CollectCTESlices(mp, pexpr, 0 /*curSlice*/, &nextSlice, prodInfos,
+					 consInfos);
+
+	BOOL cross = FFoundCrossSlice(consInfos, prodInfos);
+
+	prodInfos->Release();
+	consInfos->Release();
+
+	return cross;
 }
 
 //---------------------------------------------------------------------------
@@ -2035,6 +2160,30 @@ CUtils::FHasCountAgg(CExpression *pexpr,
 	}
 
 	return fHasCountAgg;
+}
+
+
+BOOL
+CUtils::FHasScalarAgg(CExpression *pexpr)
+{
+	GPOS_CHECK_STACK_SIZE;
+	GPOS_ASSERT(pexpr->Pop()->FLogical());
+
+	if (COperator::EopLogicalGbAgg == pexpr->Pop()->Eopid() &&
+		0 == CLogicalGbAgg::PopConvert(pexpr->Pop())->Pdrgpcr()->Size())
+	{
+		return true;
+	}
+
+	for (ULONG ul = 0; ul < pexpr->Arity(); ul++)
+	{
+		CExpression *pexprChild = (*pexpr)[ul];
+		if (pexprChild->Pop()->FLogical() && FHasScalarAgg(pexprChild))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 
@@ -4709,19 +4858,56 @@ CUtils::FHasAggWindowFunc(CExpression *pexpr)
 	return fHasAggWindowFunc;
 }
 
+// returns true if the given aggregate function has an ORDER BY clause
+BOOL
+CUtils::FAggHasOrderBy(CExpression *pexprAggFunc)
+{
+	GPOS_ASSERT(nullptr != pexprAggFunc);
+	GPOS_ASSERT(COperator::EopScalarAggFunc == pexprAggFunc->Pop()->Eopid());
 
-// returns true if expression contains ordered aggregate function
+	return pexprAggFunc->Arity() > EaggfuncIndexOrder &&
+		   (*pexprAggFunc)[EaggfuncIndexOrder]->Arity() > 0;
+}
+
+// returns true if the result of the aggregate function may depend on the
+// order of its input.  That is assumed for every aggregate that is not known
+// to be order insensitive, including all user-defined ones that are not
+// MIN/MAX-like, see is_agg_order_insensitive().
+BOOL
+CUtils::FOrderSensitiveAgg(IMDId *agg_mdid)
+{
+	CMDAccessor *md_accessor = COptCtxt::PoctxtFromTLS()->Pmda();
+
+	return !md_accessor->RetrieveAgg(agg_mdid)->IsOrderInsensitive();
+}
+
+
+// returns true if expression contains an ordered aggregate function that
+// should be split to an internal gp_percentile aggregate
 BOOL
 CUtils::FHasOrderedAggToSplit(CExpression *pexpr)
 {
 	GPOS_ASSERT(nullptr != pexpr);
 
 	CScalarAggFunc *popScAggFunc = CScalarAggFunc::PopConvert(pexpr->Pop());
-	return popScAggFunc->AggKind() == EaggfunckindOrderedSet &&
-		   (!FScalarConst((*(*pexpr)[1])[0]) ||
-			!FIsConstArray((*(*pexpr)[1])[0])) &&
-		   (FScalarIdent((*(*pexpr)[0])[0]) ||
-			CScalarIdent::FCastedScId((*(*pexpr)[0])[0]));
+	if (popScAggFunc->AggKind() != EaggfunckindOrderedSet)
+	{
+		return false;
+	}
+
+	if (pexpr->Arity() <= EaggfuncIndexOrder ||
+		(*pexpr)[EaggfuncIndexArgs]->Arity() == 0 ||
+		(*pexpr)[EaggfuncIndexDirectArgs]->Arity() == 0 ||
+		(*pexpr)[EaggfuncIndexOrder]->Arity() == 0)
+	{
+		return false;
+	}
+
+	CExpression *pexprArg = (*(*pexpr)[EaggfuncIndexArgs])[0];
+	CExpression *pexprDirectArg = (*(*pexpr)[EaggfuncIndexDirectArgs])[0];
+
+	return (!FScalarConst(pexprDirectArg) || !FIsConstArray(pexprDirectArg)) &&
+		   (FScalarIdent(pexprArg) || CScalarIdent::FCastedScId(pexprArg));
 }
 
 BOOL

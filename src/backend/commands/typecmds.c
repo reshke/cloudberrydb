@@ -3,7 +3,7 @@
  * typecmds.c
  *	  Routines for SQL commands that manipulate types (and domains).
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -39,6 +39,7 @@
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
+#include "catalog/dependency.h"
 #include "catalog/heap.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_am.h"
@@ -141,7 +142,8 @@ static void checkEnumOwner(HeapTuple tup);
 static char *domainAddConstraint(Oid domainOid, Oid domainNamespace,
 								 Oid baseTypeOid,
 								 int typMod, Constraint *constr,
-								 const char *domainName, ObjectAddress *constrAddr);
+								 const char *domainName, ObjectAddress *constrAddr,
+								 bool is_readd);
 static Node *replace_domain_constraint_value(ParseState *pstate,
 											 ColumnRef *cref);
 
@@ -234,7 +236,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 #ifdef NOT_USED
 	/* XXX this is unnecessary given the superuser check above */
 	/* Check we have creation rights in target namespace */
-	aclresult = pg_namespace_aclcheck(typeNamespace, GetUserId(), ACL_CREATE);
+	aclresult = object_aclcheck(NamespaceRelationId, typeNamespace, GetUserId(), ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_SCHEMA,
 					   get_namespace_name(typeNamespace));
@@ -380,10 +382,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 			continue;
 		}
 		if (*defelp != NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("conflicting or redundant options"),
-					 parser_errposition(pstate, defel->location)));
+			errorConflictingDefElem(defel, pstate);
 		*defelp = defel;
 	}
 
@@ -585,28 +584,28 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	 * findTypeInputFunction et al, where they could be shared by AlterType.
 	 */
 #ifdef NOT_USED
-	if (inputOid && !pg_proc_ownercheck(inputOid, GetUserId()))
+	if (inputOid && !object_ownercheck(ProcedureRelationId, inputOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(inputName));
-	if (outputOid && !pg_proc_ownercheck(outputOid, GetUserId()))
+	if (outputOid && !object_ownercheck(ProcedureRelationId, outputOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(outputName));
-	if (receiveOid && !pg_proc_ownercheck(receiveOid, GetUserId()))
+	if (receiveOid && !object_ownercheck(ProcedureRelationId, receiveOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(receiveName));
-	if (sendOid && !pg_proc_ownercheck(sendOid, GetUserId()))
+	if (sendOid && !object_ownercheck(ProcedureRelationId, sendOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(sendName));
-	if (typmodinOid && !pg_proc_ownercheck(typmodinOid, GetUserId()))
+	if (typmodinOid && !object_ownercheck(ProcedureRelationId, typmodinOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(typmodinName));
-	if (typmodoutOid && !pg_proc_ownercheck(typmodoutOid, GetUserId()))
+	if (typmodoutOid && !object_ownercheck(ProcedureRelationId, typmodoutOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(typmodoutName));
-	if (analyzeOid && !pg_proc_ownercheck(analyzeOid, GetUserId()))
+	if (analyzeOid && !object_ownercheck(ProcedureRelationId, analyzeOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(analyzeName));
-	if (subscriptOid && !pg_proc_ownercheck(subscriptOid, GetUserId()))
+	if (subscriptOid && !object_ownercheck(ProcedureRelationId, subscriptOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(subscriptName));
 #endif
@@ -821,11 +820,17 @@ DefineDomain(CreateDomainStmt *stmt)
 														&domainName);
 
 	/* Check we have creation rights in target namespace */
-	aclresult = pg_namespace_aclcheck(domainNamespace, GetUserId(),
-									  ACL_CREATE);
+	aclresult = object_aclcheck(NamespaceRelationId, domainNamespace, GetUserId(),
+								ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_SCHEMA,
 					   get_namespace_name(domainNamespace));
+
+	if (InSecurityRestrictedOperation() &&
+		isAnyTempNamespace(domainNamespace))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("cannot create a type in a temporary schema within security-restricted operation")));
 
 	/*
 	 * Check for collision with an existing type name.  If there is one and
@@ -869,7 +874,7 @@ DefineDomain(CreateDomainStmt *stmt)
 				 errmsg("\"%s\" is not a valid base type for a domain",
 						TypeNameToString(stmt->typeName))));
 
-	aclresult = pg_type_aclcheck(basetypeoid, GetUserId(), ACL_USAGE);
+	aclresult = object_aclcheck(TypeRelationId, basetypeoid, GetUserId(), ACL_USAGE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error_type(aclresult, basetypeoid);
 
@@ -1100,6 +1105,10 @@ DefineDomain(CreateDomainStmt *stmt)
 		}
 	}
 
+	/* TypeCreate() records dependencies on the default expression's types. */
+	if (defaultValueBin)
+		CheckUsageOnTypesInExpr(stringToNode(defaultValueBin), NIL, GetUserId());
+
 	/* Allocate OID for array type */
 	domainArrayName = makeArrayTypeName(domainName, domainNamespace);
 	domainArrayOid = AssignTypeArrayOid(domainArrayName, domainNamespace);
@@ -1197,7 +1206,7 @@ DefineDomain(CreateDomainStmt *stmt)
 			case CONSTR_CHECK:
 				domainAddConstraint(address.objectId, domainNamespace,
 									basetypeoid, basetypeMod,
-									constr, domainName, NULL);
+									constr, domainName, NULL, false);
 				break;
 
 				/* Other constraint types were fully processed above */
@@ -1249,10 +1258,16 @@ DefineEnum(CreateEnumStmt *stmt)
 													  &enumName);
 
 	/* Check we have creation rights in target namespace */
-	aclresult = pg_namespace_aclcheck(enumNamespace, GetUserId(), ACL_CREATE);
+	aclresult = object_aclcheck(NamespaceRelationId, enumNamespace, GetUserId(), ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_SCHEMA,
 					   get_namespace_name(enumNamespace));
+
+	if (InSecurityRestrictedOperation() &&
+		isAnyTempNamespace(enumNamespace))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("cannot create a type in a temporary schema within security-restricted operation")));
 
 	/*
 	 * Check for collision with an existing type name.  If there is one and
@@ -1433,7 +1448,7 @@ checkEnumOwner(HeapTuple tup)
 						format_type_be(typTup->oid))));
 
 	/* Permission check: must own type */
-	if (!pg_type_ownercheck(typTup->oid, GetUserId()))
+	if (!object_ownercheck(TypeRelationId, typTup->oid, GetUserId()))
 		aclcheck_error_type(ACLCHECK_NOT_OWNER, typTup->oid);
 }
 
@@ -1448,7 +1463,7 @@ checkEnumOwner(HeapTuple tup)
  * and users might have queries with that same assumption.
  */
 ObjectAddress
-DefineRange(CreateRangeStmt *stmt)
+DefineRange(ParseState *pstate, CreateRangeStmt *stmt)
 {
 	char	   *typeName;
 	Oid			typeNamespace;
@@ -1484,10 +1499,16 @@ DefineRange(CreateRangeStmt *stmt)
 													  &typeName);
 
 	/* Check we have creation rights in target namespace */
-	aclresult = pg_namespace_aclcheck(typeNamespace, GetUserId(), ACL_CREATE);
+	aclresult = object_aclcheck(NamespaceRelationId, typeNamespace, GetUserId(), ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_SCHEMA,
 					   get_namespace_name(typeNamespace));
+
+	if (InSecurityRestrictedOperation() &&
+		isAnyTempNamespace(typeNamespace))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("cannot create a type in a temporary schema within security-restricted operation")));
 
 	/*
 	 * Look to see if type already exists.
@@ -1523,53 +1544,54 @@ DefineRange(CreateRangeStmt *stmt)
 		if (strcmp(defel->defname, "subtype") == 0)
 		{
 			if (OidIsValid(rangeSubtype))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			/* we can look up the subtype name immediately */
 			rangeSubtype = typenameTypeId(NULL, defGetTypeName(defel));
 		}
 		else if (strcmp(defel->defname, "subtype_opclass") == 0)
 		{
 			if (rangeSubOpclassName != NIL)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			rangeSubOpclassName = defGetQualifiedName(defel);
 		}
 		else if (strcmp(defel->defname, "collation") == 0)
 		{
 			if (rangeCollationName != NIL)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			rangeCollationName = defGetQualifiedName(defel);
 		}
 		else if (strcmp(defel->defname, "canonical") == 0)
 		{
 			if (rangeCanonicalName != NIL)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			rangeCanonicalName = defGetQualifiedName(defel);
 		}
 		else if (strcmp(defel->defname, "subtype_diff") == 0)
 		{
 			if (rangeSubtypeDiffName != NIL)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			rangeSubtypeDiffName = defGetQualifiedName(defel);
 		}
 		else if (strcmp(defel->defname, "multirange_type_name") == 0)
 		{
 			if (multirangeTypeName != NULL)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 			/* we can look up the subtype name immediately */
 			multirangeNamespace = QualifiedNameGetCreationNamespace(defGetQualifiedName(defel),
 																	&multirangeTypeName);
+
+			/* Check we have creation rights in target namespace */
+			aclresult = object_aclcheck(NamespaceRelationId, multirangeNamespace,
+										GetUserId(), ACL_CREATE);
+			if (aclresult != ACLCHECK_OK)
+				aclcheck_error(aclresult, OBJECT_SCHEMA,
+							   get_namespace_name(multirangeNamespace));
+
+			if (InSecurityRestrictedOperation() &&
+				isAnyTempNamespace(multirangeNamespace))
+				ereport(ERROR,
+						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						 errmsg("cannot create a type in a temporary schema within security-restricted operation")));
 		}
 		else
 			ereport(ERROR,
@@ -1589,6 +1611,10 @@ DefineRange(CreateRangeStmt *stmt)
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("range subtype cannot be %s",
 						format_type_be(rangeSubtype))));
+
+	aclresult = object_aclcheck(TypeRelationId, rangeSubtype, GetUserId(), ACL_USAGE);
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error_type(aclresult, rangeSubtype);
 
 	/* Identify subopclass */
 	rangeSubOpclass = findRangeSubOpclass(rangeSubOpclassName, rangeSubtype);
@@ -1832,7 +1858,9 @@ DefineRange(CreateRangeStmt *stmt)
 							   &castFuncOid);
 
 	/* Create cast from the range type to its multirange type */
-	CastCreate(typoid, multirangeOid, castFuncOid, 'e', 'f', DEPENDENCY_INTERNAL);
+	CastCreate(typoid, multirangeOid, castFuncOid, InvalidOid, InvalidOid,
+			   COERCION_CODE_EXPLICIT, COERCION_METHOD_FUNCTION,
+			   DEPENDENCY_INTERNAL);
 
 	pfree(multirangeArrayName);
 
@@ -2037,12 +2065,9 @@ makeMultirangeConstructors(const char *name, Oid namespace,
 	/* n-arg constructor - vararg */
 	argtypes = buildoidvector(&rangeArrayOid, 1);
 	allParamTypes = ObjectIdGetDatum(rangeArrayOid);
-	allParameterTypes = construct_array(&allParamTypes,
-										1, OIDOID,
-										sizeof(Oid), true, 'i');
+	allParameterTypes = construct_array_builtin(&allParamTypes, 1, OIDOID);
 	paramModes = CharGetDatum(FUNC_PARAM_VARIADIC);
-	parameterModes = construct_array(&paramModes, 1, CHAROID,
-									 1, true, 'c');
+	parameterModes = construct_array_builtin(&paramModes, 1, CHAROID);
 	myself = ProcedureCreate(name,	/* name: same as multirange type */
 							 namespace,
 							 false, /* replace */
@@ -2489,7 +2514,7 @@ findRangeCanonicalFunction(List *procname, Oid typeOid)
 						func_signature_string(procname, 1, NIL, argList))));
 
 	/* Also, range type's creator must have permission to call function */
-	aclresult = pg_proc_aclcheck(procOid, GetUserId(), ACL_EXECUTE);
+	aclresult = object_aclcheck(ProcedureRelationId, procOid, GetUserId(), ACL_EXECUTE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_FUNCTION, get_func_name(procOid));
 
@@ -2532,7 +2557,7 @@ findRangeSubtypeDiffFunction(List *procname, Oid subtype)
 						func_signature_string(procname, 2, NIL, argList))));
 
 	/* Also, range type's creator must have permission to call function */
-	aclresult = pg_proc_aclcheck(procOid, GetUserId(), ACL_EXECUTE);
+	aclresult = object_aclcheck(ProcedureRelationId, procOid, GetUserId(), ACL_EXECUTE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_FUNCTION, get_func_name(procOid));
 
@@ -2689,9 +2714,9 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 	Relation	rel;
 	char	   *defaultValue;
 	Node	   *defaultExpr = NULL; /* NULL if no default specified */
-	Datum		new_record[Natts_pg_type];
-	bool		new_record_nulls[Natts_pg_type];
-	bool		new_record_repl[Natts_pg_type];
+	Datum		new_record[Natts_pg_type] = {0};
+	bool		new_record_nulls[Natts_pg_type] = {0};
+	bool		new_record_repl[Natts_pg_type] = {0};
 	HeapTuple	newtuple;
 	Form_pg_type typTup;
 	ObjectAddress address;
@@ -2712,9 +2737,6 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 	checkDomainOwner(tup);
 
 	/* Setup new tuple */
-	MemSet(new_record, (Datum) 0, sizeof(new_record));
-	MemSet(new_record_nulls, false, sizeof(new_record_nulls));
-	MemSet(new_record_repl, false, sizeof(new_record_repl));
 
 	/* Store the new default into the tuple */
 	if (defaultRaw)
@@ -2751,6 +2773,12 @@ AlterDomainDefault(List *names, Node *defaultRaw)
 		}
 		else
 		{
+			/*
+			 * The below call to GenerateTypeDependencies() creates the
+			 * dependencies on types.  We are responsible for checking USAGE.
+			 */
+			CheckUsageOnTypesInExpr(defaultExpr, NIL, GetUserId());
+
 			/*
 			 * Expression must be stored as a nodeToString result, but we also
 			 * require a valid textual representation (mainly to make life
@@ -3034,7 +3062,7 @@ AlterDomainDropConstraint(List *names, const char *constrName,
  */
 ObjectAddress
 AlterDomainAddConstraint(List *names, Node *newConstraint,
-						 ObjectAddress *constrAddr)
+						 ObjectAddress *constrAddr, bool is_readd)
 {
 	TypeName   *typename;
 	Oid			domainoid;
@@ -3119,7 +3147,8 @@ AlterDomainAddConstraint(List *names, Node *newConstraint,
 
 	ccbin = domainAddConstraint(domainoid, typTup->typnamespace,
 								typTup->typbasetype, typTup->typtypmod,
-								constr, NameStr(typTup->typname), constrAddr);
+								constr, NameStr(typTup->typname), constrAddr,
+								is_readd);
 
 	/*
 	 * If requested to validate the constraint, test all values stored in the
@@ -3161,7 +3190,6 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 	char	   *conbin;
 	SysScanDesc scan;
 	Datum		val;
-	bool		isnull;
 	HeapTuple	tuple;
 	HeapTuple	copyTuple;
 	ScanKeyData skey[3];
@@ -3216,12 +3244,7 @@ AlterDomainValidateConstraint(List *names, const char *constrName)
 				 errmsg("constraint \"%s\" of domain \"%s\" is not a check constraint",
 						constrName, TypeNameToString(typename))));
 
-	val = SysCacheGetAttr(CONSTROID, tuple,
-						  Anum_pg_constraint_conbin,
-						  &isnull);
-	if (isnull)
-		elog(ERROR, "null conbin for constraint %u",
-			 con->oid);
+	val = SysCacheGetAttrNotNull(CONSTROID, tuple, Anum_pg_constraint_conbin);
 	conbin = TextDatumGetCString(val);
 
 	validateDomainConstraint(domainoid, conbin);
@@ -3552,7 +3575,7 @@ checkDomainOwner(HeapTuple tup)
 						format_type_be(typTup->oid))));
 
 	/* Permission check: must own type */
-	if (!pg_type_ownercheck(typTup->oid, GetUserId()))
+	if (!object_ownercheck(TypeRelationId, typTup->oid, GetUserId()))
 		aclcheck_error_type(ACLCHECK_NOT_OWNER, typTup->oid);
 }
 
@@ -3562,7 +3585,8 @@ checkDomainOwner(HeapTuple tup)
 static char *
 domainAddConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
 					int typMod, Constraint *constr,
-					const char *domainName, ObjectAddress *constrAddr)
+					const char *domainName, ObjectAddress *constrAddr,
+					bool is_readd)
 {
 	Node	   *expr;
 	char	   *ccbin;
@@ -3629,10 +3653,17 @@ domainAddConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
 	assign_expr_collations(pstate, expr);
 
 	/*
+	 * The below call to CreateConstraintEntry() creates the dependencies on
+	 * types.  We are responsible for checking USAGE.
+	 */
+	if (!is_readd)
+		CheckUsageOnTypesInExpr(expr, NIL, GetUserId());
+
+	/*
 	 * Domains don't allow variables (this is probably dead code now that
 	 * add_missing_from is history, but let's be sure).
 	 */
-	if (list_length(pstate->p_rtable) != 0 ||
+	if (pstate->p_rtable != NIL ||
 		contain_var_clause(expr))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
@@ -3668,6 +3699,8 @@ domainAddConstraint(Oid domainOid, Oid domainNamespace, Oid baseTypeOid,
 							  0,
 							  ' ',
 							  ' ',
+							  NULL,
+							  0,
 							  ' ',
 							  NULL, /* not an exclusion constraint */
 							  expr, /* Tree form of check constraint */
@@ -3701,7 +3734,6 @@ replace_domain_constraint_value(ParseState *pstate, ColumnRef *cref)
 		Node	   *field1 = (Node *) linitial(cref->fields);
 		char	   *colname;
 
-		Assert(IsA(field1, String));
 		colname = strVal(field1);
 		if (strcmp(colname, "value") == 0)
 		{
@@ -3744,7 +3776,7 @@ RenameType(RenameStmt *stmt)
 	typTup = (Form_pg_type) GETSTRUCT(tup);
 
 	/* check permissions on type */
-	if (!pg_type_ownercheck(typeOid, GetUserId()))
+	if (!object_ownercheck(TypeRelationId, typeOid, GetUserId()))
 		aclcheck_error_type(ACLCHECK_NOT_OWNER, typeOid);
 
 	/* ALTER DOMAIN used on a non-domain? */
@@ -3765,7 +3797,9 @@ RenameType(RenameStmt *stmt)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("%s is a table's row type",
 						format_type_be(typeOid)),
-				 errhint("Use ALTER TABLE instead.")));
+		/* translator: %s is an SQL ALTER command */
+				 errhint("Use %s instead.",
+						 "ALTER TABLE")));
 
 	/* don't allow direct alteration of array types, either */
 	if (IsTrueArrayType(typTup))
@@ -3846,7 +3880,9 @@ AlterTypeOwner(List *names, Oid newOwnerId, ObjectType objecttype)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("%s is a table's row type",
 						format_type_be(typeOid)),
-				 errhint("Use ALTER TABLE instead.")));
+		/* translator: %s is an SQL ALTER command */
+				 errhint("Use %s instead.",
+						 "ALTER TABLE")));
 
 	/* don't allow direct alteration of array types, either */
 	if (IsTrueArrayType(typTup))
@@ -3867,16 +3903,16 @@ AlterTypeOwner(List *names, Oid newOwnerId, ObjectType objecttype)
 		if (!superuser())
 		{
 			/* Otherwise, must be owner of the existing object */
-			if (!pg_type_ownercheck(typTup->oid, GetUserId()))
+			if (!object_ownercheck(TypeRelationId, typTup->oid, GetUserId()))
 				aclcheck_error_type(ACLCHECK_NOT_OWNER, typTup->oid);
 
 			/* Must be able to become new owner */
-			check_is_member_of_role(GetUserId(), newOwnerId);
+			check_can_set_role(GetUserId(), newOwnerId);
 
 			/* New owner must have CREATE privilege on namespace */
-			aclresult = pg_namespace_aclcheck(typTup->typnamespace,
-											  newOwnerId,
-											  ACL_CREATE);
+			aclresult = object_aclcheck(NamespaceRelationId, typTup->typnamespace,
+										newOwnerId,
+										ACL_CREATE);
 			if (aclresult != ACLCHECK_OK)
 				aclcheck_error(aclresult, OBJECT_SCHEMA,
 							   get_namespace_name(typTup->typnamespace));
@@ -4042,7 +4078,7 @@ AlterTypeNamespace_oid(Oid typeOid, Oid nspOid, ObjectAddresses *objsMoved)
 	Oid			elemOid;
 
 	/* check permissions on type */
-	if (!pg_type_ownercheck(typeOid, GetUserId()))
+	if (!object_ownercheck(TypeRelationId, typeOid, GetUserId()))
 		aclcheck_error_type(ACLCHECK_NOT_OWNER, typeOid);
 
 	/* don't allow direct alteration of array types */
@@ -4137,7 +4173,9 @@ AlterTypeNamespaceInternal(Oid typeOid, Oid nspOid,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("%s is a table's row type",
 						format_type_be(typeOid)),
-				 errhint("Use ALTER TABLE instead.")));
+		/* translator: %s is an SQL ALTER command */
+				 errhint("Use %s instead.",
+						 "ALTER TABLE")));
 
 	if (oldNspOid != nspOid)
 	{
@@ -4415,7 +4453,7 @@ AlterType(AlterTypeStmt *stmt)
 	}
 	else
 	{
-		if (!pg_type_ownercheck(typeOid, GetUserId()))
+		if (!object_ownercheck(TypeRelationId, typeOid, GetUserId()))
 			aclcheck_error_type(ACLCHECK_NOT_OWNER, typeOid);
 	}
 

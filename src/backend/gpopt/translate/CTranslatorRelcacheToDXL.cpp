@@ -516,7 +516,6 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 	IMdIdArray *check_constraint_mdids = nullptr;
 	BOOL is_temporary = false;
 	BOOL is_partitioned = false;
-	IMDRelation *md_rel = nullptr;
 	IMdIdArray *partition_oids = nullptr;
 	IMDId *foreign_server_mdid = nullptr;
 
@@ -618,14 +617,31 @@ CTranslatorRelcacheToDXL::RetrieveRel(CMemoryPool *mp, CMDAccessor *md_accessor,
 			CMDIdGPDB(IMDId::EmdidGeneral, gpdb::GetForeignServerId(oid));
 	}
 
-	md_rel = GPOS_NEW(mp) CMDRelationGPDB(
+	CMDRelationGPDB *md_rel_gpdb = GPOS_NEW(mp) CMDRelationGPDB(
 		mp, mdid, mdname, is_temporary, rel_storage_type, dist,
 		mdcol_array, distr_cols, distr_op_families, part_keys, part_types,
 		partition_oids, convert_hash_to_random, keyset_array,
 		md_index_info_array, check_constraint_mdids, mdpart_constraint,
 		foreign_server_mdid, rel->rd_rel->reltuples);
 
-	return md_rel;
+	// Set segment file count for AO/AOCO tables
+	// Skip partitioned tables as they don't have physical storage (only leaf partitions do)
+	if ((rel_storage_type == IMDRelation::ErelstorageAppendOnlyRows ||
+		 rel_storage_type == IMDRelation::ErelstorageAppendOnlyCols) &&
+		rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+	{
+		INT seg_file_count = gpdb::GetAppendOnlySegmentFilesCount(rel.get());
+		md_rel_gpdb->SetSegFileCount(seg_file_count);
+	}
+
+	// Set parallel workers from table options
+	if (rel->rd_options != NULL)
+	{
+		INT parallel_workers = RelationGetParallelWorkers(rel.get(), -1);
+		md_rel_gpdb->SetParallelWorkers(parallel_workers);
+	}
+
+	return md_rel_gpdb;
 }
 
 //---------------------------------------------------------------------------
@@ -1195,9 +1211,12 @@ CTranslatorRelcacheToDXL::RetrieveType(CMemoryPool *mp, IMDId *mdid)
 	INT iFlags = TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR | TYPECACHE_GT_OPR |
 				 TYPECACHE_CMP_PROC | TYPECACHE_EQ_OPR_FINFO |
 				 TYPECACHE_CMP_PROC_FINFO | TYPECACHE_TUPDESC;
-	// special case for range type: fetch HASH_PROC that handles ranges as a
-	// container and returns the hash proc if the underlying element has one
-	if (gpdb::IsTypeRange(oid_type))
+	// special case for range and multirange types: fetch HASH_PROC that
+	// handles them as a container and returns the hash proc only if the
+	// underlying element has one
+	BOOL is_range_or_multirange =
+		gpdb::IsTypeRange(oid_type) || gpdb::IsTypeMultirange(oid_type);
+	if (is_range_or_multirange)
 	{
 		iFlags |= TYPECACHE_HASH_PROC;
 	}
@@ -1235,8 +1254,9 @@ CTranslatorRelcacheToDXL::RetrieveType(CMemoryPool *mp, IMDId *mdid)
 		GPOS_NEW(mp) CMDIdGPDB(IMDId::EmdidGeneral, ptce->cmp_proc);
 
 	BOOL is_hashable = false;
-	// decide if range operator is hashable based on returned hash proc
-	if (gpdb::IsTypeRange(oid_type))
+	// decide if range or multirange operator is hashable based on returned
+	// hash proc
+	if (is_range_or_multirange)
 	{
 		is_hashable = OidIsValid(ptce->hash_proc);
 	}
@@ -1618,7 +1638,9 @@ CTranslatorRelcacheToDXL::RetrieveAgg(CMemoryPool *mp, IMDId *mdid)
 
 	CMDAggregateGPDB *pmdagg = GPOS_NEW(mp) CMDAggregateGPDB(
 		mp, mdid, mdname, result_type_mdid, intermediate_result_type_mdid,
-		is_ordered, is_splittable, is_hash_agg_capable, is_repsafe);
+		is_ordered, is_splittable, is_hash_agg_capable, is_repsafe,
+		gpdb::IsAggFinalFuncVolatile(agg_oid),
+		gpdb::IsAggOrderInsensitive(agg_oid));
 	return pmdagg;
 }
 
@@ -2676,11 +2698,14 @@ CTranslatorRelcacheToDXL::RetrievePartKeysAndTypes(CMemoryPool *mp,
 				   GPOS_WSZ_LIT("partitioning by expression"));
 	}
 
-	if (PARTITION_STRATEGY_HASH == part_type)
-	{
-		GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
-				   GPOS_WSZ_LIT("hash partitioning"));
-	}
+	// Hash-partitioned tables are supported for scanning only. ORCA cannot
+	// express a hash partition's membership rule (the satisfies_hash_partition
+	// call, i.e. hash(key) mod modulus = remainder) as a btree interval
+	// constraint, so it does no static partition pruning for hash partitions
+	// and simply scans every leaf partition. Range and list partitions keep
+	// full pruning support. Letting the strategy flow through here (instead of
+	// raising ExmiMDObjUnsupported) keeps such queries inside ORCA rather than
+	// falling back to the Postgres planner.
 
 	(*part_keys)->Append(GPOS_NEW(mp) ULONG(attno - 1));
 	(*part_types)->Append(GPOS_NEW(mp) CHAR(part_type));
@@ -3147,6 +3172,20 @@ CTranslatorRelcacheToDXL::RetrieveStorageTypeForPartitionedTable(Relation rel)
 						"Queries with partitions of greenplum_fdw are not supported"));
 			}
 			GPOS_DELETE(fdw_name_str);
+
+			// Check for mixed storage before continuing
+			// If we already encountered non-foreign partitions, mark as mixed
+			if (rel_storage_type != IMDRelation::ErelstorageSentinel &&
+				rel_storage_type != IMDRelation::ErelstorageForeign)
+			{
+				// Already have non-foreign partition(s), now found foreign → mixed
+				rel_storage_type = IMDRelation::ErelstorageMixedPartitioned;
+			}
+			else if (rel_storage_type == IMDRelation::ErelstorageSentinel)
+			{
+				// First partition is foreign
+				rel_storage_type = IMDRelation::ErelstorageForeign;
+			}
 			continue;
 		}
 		all_foreign = false;
@@ -3154,11 +3193,15 @@ CTranslatorRelcacheToDXL::RetrieveStorageTypeForPartitionedTable(Relation rel)
 		{
 			rel_storage_type = child_storage;
 		}
-
+		else if (rel_storage_type == IMDRelation::ErelstorageForeign)
+		{
+			// Previously had foreign partition(s), now found non-foreign → mixed
+			rel_storage_type = IMDRelation::ErelstorageMixedPartitioned;
+		}
 		// mark any partitioned table with supported partitions of mixed storage types,
 		// this is more conservative for certain skans (eg: we can't do an index scan if any
 		// partition is ao, we must only do a sequential or bitmap scan)
-		if (rel_storage_type != child_storage)
+		else if (rel_storage_type != child_storage)
 		{
 			rel_storage_type = IMDRelation::ErelstorageMixedPartitioned;
 		}

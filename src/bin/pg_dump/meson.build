@@ -5,6 +5,7 @@ pg_dump_common_sources = files(
   'compress_io.c',
   'compress_lz4.c',
   'compress_none.c',
+  'compress_zstd.c',
   'dumputils.c',
   'parallel.c',
   'pg_backup_archiver.c',
@@ -19,7 +20,7 @@ pg_dump_common_sources = files(
 pg_dump_common = static_library('libpgdump_common',
   pg_dump_common_sources,
   c_pch: pch_postgres_fe_h,
-  dependencies: [frontend_code, libpq, lz4, zlib],
+  dependencies: [frontend_code, libpq, lz4, zlib, zstd],
   kwargs: internal_lib_args,
 )
 
@@ -89,7 +90,9 @@ tests += {
   'tap': {
     'env': {
       'GZIP_PROGRAM': gzip.path(),
+      'TAR': tar.found() ? tar.path() : '',
       'LZ4': program_lz4.found() ? program_lz4.path() : '',
+      'ZSTD': program_zstd.found() ? program_zstd.path() : '',
       'with_icu': icu.found() ? 'yes' : 'no',
     },
     'tests': [
@@ -98,6 +101,7 @@ tests += {
       't/003_pg_dump_with_server.pl',
       't/004_pg_dump_parallel.pl',
       't/010_dump_connstr.pl',
+      't/011_restore.pl',
     ],
   },
 }

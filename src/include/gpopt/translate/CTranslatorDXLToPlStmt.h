@@ -190,9 +190,6 @@ public:
 	static JoinType GetGPDBJoinTypeFromDXLJoinType(EdxlJoinType join_type);
 
 private:
-	// Set the bitmapset of a plan to the list of param_ids defined by the plan
-	static void SetParamIds(Plan *);
-
 	static List *TranslatePartOids(IMdIdArray *parts, INT lockmode);
 
 	static List *TranslateJoinPruneParamids(
@@ -208,6 +205,13 @@ private:
 
 	// translate DXL table scan node into a SeqScan node
 	Plan *TranslateDXLTblScan(
+		const CDXLNode *tbl_scan_dxlnode, CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *
+			ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
+	// translate DXL parallel table scan node into a parallel SeqScan node
+	Plan *TranslateDXLParallelTblScan(
 		const CDXLNode *tbl_scan_dxlnode, CDXLTranslateContext *output_context,
 		CDXLTranslationContextArray *
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
@@ -352,6 +356,12 @@ private:
 		const CDXLNode *append_dxlnode, CDXLTranslateContext *output_context,
 		CDXLTranslationContextArray *
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
+	Plan *TranslateDXLParallelAppend(
+		const CDXLNode *append_dxlnode, CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *
+		ctxt_translation_prev_siblings  // translation contexts of previous siblings
 	);
 
 	Plan *TranslateDXLMaterialize(
@@ -657,6 +667,10 @@ private:
 
 	// fill the aggno and transno for the aggnode
 	static void TranslateAggFillInfo(CContextDXLToPlStmt *context, Aggref *aggref);
+
+	// extract parallel workers from DXL node tree
+	static ULONG ExtractParallelWorkersFromDXL(const CDXLNode *dxlnode);
+
 };
 }  // namespace gpdxl
 

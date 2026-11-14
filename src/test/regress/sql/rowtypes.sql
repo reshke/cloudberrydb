@@ -41,6 +41,13 @@ select '[]'::fullname;          -- bad
 select ' (Joe,Blow)  '::fullname;  -- ok, extra whitespace
 select '(Joe,Blow) /'::fullname;  -- bad
 
+-- test non-error-throwing API
+SELECT pg_input_is_valid('(1,2)', 'complex_t');
+SELECT pg_input_is_valid('(1,2', 'complex_t');
+SELECT pg_input_is_valid('(1,zed)', 'complex_t');
+SELECT * FROM pg_input_error_info('(1,zed)', 'complex_t');
+SELECT * FROM pg_input_error_info('(1,1e400)', 'complex_t');
+
 create temp table quadtable(f1 int, q quad);
 
 insert into quadtable values (1, ((3.3,4.4),(5.5,6.6)));
@@ -87,6 +94,11 @@ create temp table pp (f1 text);
 insert into pp values (repeat('abcdefghijkl', 100000));
 
 insert into people select ('Jim', f1, null)::fullname, current_date from pp;
+
+select (fn).first, substr((fn).last, 1, 20), length((fn).last) from people;
+
+-- try an update on a toasted composite value, too
+update people set fn.first = 'Jack';
 
 select (fn).first, substr((fn).last, 1, 20), length((fn).last) from people;
 
@@ -496,6 +508,52 @@ with r(a,b) as materialized
           (null,row(1,2)), (null,row(null,null)), (null,null) )
 select r, r is null as isnull, r is not null as isnotnull from r;
 
+--
+-- Check parsing of indirect references to composite values (bug #18077)
+--
+explain (verbose, costs off)
+with cte(c) as materialized (select row(1, 2)),
+     cte2(c) as (select * from cte)
+select * from cte2 as t
+where (select * from (select c as c1) s
+       where (select (c1).f1 > 0)) is not null;
+
+with cte(c) as materialized (select row(1, 2)),
+     cte2(c) as (select * from cte)
+select * from cte2 as t
+where (select * from (select c as c1) s
+       where (select (c1).f1 > 0)) is not null;
+
+-- Also check deparsing of such cases
+create view composite_v as
+with cte(c) as materialized (select row(1, 2)),
+     cte2(c) as (select * from cte)
+select 1 as one from cte2 as t
+where (select * from (select c as c1) s
+       where (select (c1).f1 > 0)) is not null;
+select pg_get_viewdef('composite_v', true);
+drop view composite_v;
+
+--
+-- Check cases where the composite comes from a proven-dummy rel (bug #18576)
+--
+explain (verbose, costs off)
+select (ss.a).x, (ss.a).n from
+  (select information_schema._pg_expandarray(array[1,2]) AS a) ss;
+explain (verbose, costs off)
+select (ss.a).x, (ss.a).n from
+  (select information_schema._pg_expandarray(array[1,2]) AS a) ss
+where false;
+
+explain (verbose, costs off)
+with cte(c) as materialized (select row(1, 2)),
+     cte2(c) as (select * from cte)
+select (c).f1 from cte2 as t;
+explain (verbose, costs off)
+with cte(c) as materialized (select row(1, 2)),
+     cte2(c) as (select * from cte)
+select (c).f1 from cte2 as t
+where false;
 
 --
 -- Tests for component access / FieldSelect
@@ -518,3 +576,173 @@ SELECT (NULL::compositetable).a;
 SELECT (NULL::compositetable).oid;
 
 DROP TABLE compositetable;
+
+--
+-- Test for mutating the composite type while it's used in a FieldStore
+--
+
+-- Table, which we'll mutate concurrently with a updating an existing value
+-- of that type. We'll add BIGINT columns, which are unlikely to crash but
+-- could leak some data, and then TEXT columns, which are more likely to
+-- cause crashes.
+CREATE TABLE compositetable_type (a int);
+CREATE TABLE compositetable_holder (id int, c compositetable_type);
+INSERT INTO compositetable_holder VALUES (1, ROW(1)::compositetable_type);
+
+CREATE FUNCTION compositetable_grow() RETURNS int VOLATILE LANGUAGE plpgsql AS $$
+BEGIN
+  FOR i IN 1..100 LOOP
+    EXECUTE format('ALTER TABLE compositetable_type ADD COLUMN x%s bigint', i);
+  END LOOP;
+  RETURN 7;
+END $$;
+
+-- Cloudberry cannot execute DDL in a function running on a segment.
+-- start_ignore
+UPDATE compositetable_holder SET c.a = abs(compositetable_grow());
+
+SELECT c::text FROM compositetable_holder;
+
+-- end_ignore
+CREATE OR REPLACE FUNCTION compositetable_grow() RETURNS int VOLATILE LANGUAGE plpgsql AS $$
+BEGIN
+  FOR i IN 1..100 LOOP
+    EXECUTE format('ALTER TABLE compositetable_type ADD COLUMN y%s text', i);
+  END LOOP;
+  RETURN 7;
+END $$;
+
+-- Cloudberry cannot execute DDL in a function running on a segment.
+-- start_ignore
+UPDATE compositetable_holder SET c.a = abs(compositetable_grow());
+
+SELECT c::text FROM compositetable_holder;
+
+-- end_ignore
+DROP FUNCTION compositetable_grow();
+DROP TABLE compositetable_holder;
+DROP TABLE compositetable_type;
+
+-- Similar pattern, but we'll have an array of the composite type, so that
+-- we reach the code through SubscriptingRef.
+CREATE TABLE compositetable_type (a int);
+CREATE TABLE compositetable_holder (id int, c compositetable_type[]);
+INSERT INTO compositetable_holder VALUES (1, ARRAY[ROW(1)]::compositetable_type[]);
+
+CREATE FUNCTION compositetable_grow() RETURNS int VOLATILE LANGUAGE plpgsql AS $$
+BEGIN
+  FOR i IN 1..100 LOOP
+    EXECUTE format('ALTER TABLE compositetable_type ADD COLUMN y%s text', i);
+  END LOOP;
+  RETURN 7;
+END $$;
+
+-- Cloudberry cannot execute DDL in a function running on a segment.
+-- start_ignore
+UPDATE compositetable_holder SET c[1].a = abs(compositetable_grow());
+
+SELECT c::text FROM compositetable_holder;
+
+-- end_ignore
+DROP FUNCTION compositetable_grow();
+DROP TABLE compositetable_holder;
+DROP TABLE compositetable_type;
+
+-- This time we start with a NULL value, and call the function from a WHERE
+-- condition, to trigger the NULL case in ExecEvalFieldStoreDeForm.
+CREATE TABLE compositetable_type (a int);
+CREATE TABLE compositetable_holder (id int, c compositetable_type);
+INSERT INTO compositetable_holder VALUES (1, NULL);
+
+CREATE FUNCTION compositetable_grow() RETURNS int VOLATILE LANGUAGE plpgsql AS $$
+BEGIN
+  FOR i IN 1..100 LOOP
+    EXECUTE format('ALTER TABLE compositetable_type ADD COLUMN y%s text', i);
+  END LOOP;
+  RETURN 7;
+END $$;
+
+-- This time we start with a NULL value to trigger the NULL case in
+-- ExecEvalFieldStoreDeForm. Mutate the type from the WHERE clause,
+-- because the new value won't be evaluated when starting from a NULL.
+-- Cloudberry cannot execute DDL in a function running on a segment.
+-- start_ignore
+UPDATE compositetable_holder SET c.a = 1 WHERE abs(compositetable_grow()) > 5;
+
+SELECT c::text FROM compositetable_holder;
+
+-- end_ignore
+DROP FUNCTION compositetable_grow();
+DROP TABLE compositetable_holder;
+DROP TABLE compositetable_type;
+
+-- Two nested composite types.
+CREATE TABLE compositetable_type_1 (a int);
+CREATE TABLE compositetable_type_2 (id int, b compositetable_type_1);
+CREATE TABLE compositetable_holder (id int, c compositetable_type_2);
+INSERT INTO compositetable_holder VALUES (1, ROW(1, ROW(1)::compositetable_type_1)::compositetable_type_2);
+
+CREATE FUNCTION compositetable_grow() RETURNS int VOLATILE LANGUAGE plpgsql AS $$
+BEGIN
+  FOR i IN 1..100 LOOP
+    EXECUTE format('ALTER TABLE compositetable_type_1 ADD COLUMN y%s text', i);
+  END LOOP;
+  RETURN 7;
+END $$;
+
+-- Cloudberry cannot execute DDL in a function running on a segment.
+-- start_ignore
+UPDATE compositetable_holder SET c.b.a = abs(compositetable_grow());
+
+SELECT c::text FROM compositetable_holder;
+
+-- end_ignore
+DROP FUNCTION compositetable_grow();
+DROP TABLE compositetable_holder;
+DROP TABLE compositetable_type_2;
+DROP TABLE compositetable_type_1;
+
+-- removing an attribute from a composite type
+CREATE TABLE compositetable_type_1 (a int, b int);
+CREATE TABLE compositetable_holder (v compositetable_type_1);
+INSERT INTO compositetable_holder VALUES (ROW(1, 2)::compositetable_type_1);
+
+CREATE FUNCTION compositetable_drop() RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE 'ALTER TABLE compositetable_type_1 DROP COLUMN b';
+  RETURN 12345;
+END $$;
+
+-- assign to v.b while b is dropped - the value disappears
+-- Cloudberry cannot execute DDL in a function running on a segment.
+-- start_ignore
+UPDATE compositetable_holder SET v.b = compositetable_drop();
+
+-- 12345 is nowhere to be found
+SELECT v::text AS stored_value FROM compositetable_holder;
+
+-- end_ignore
+DROP FUNCTION compositetable_drop();
+DROP TABLE compositetable_holder;
+DROP TABLE compositetable_type_1;
+
+--
+-- Tests for expanded records built from a flat composite datum, which core
+-- code never does, see make_expanded_record_from_datum().
+--
+
+CREATE TYPE expanded_comp AS (a int, b text);
+
+-- A named rowtype must keep typmod -1, a RECORD must keep its blessed typmod.
+SELECT expanded_record_info(ROW(1, 'named')::expanded_comp);
+SELECT expanded_record_info(ROW(2, 'anonymous'));
+
+-- Round-tripping through an expanded record must preserve the value.
+SELECT expanded_record_identity(ROW(3, 'roundtrip')::expanded_comp);
+SELECT expanded_record_identity(ROW(4, 'anonymous roundtrip'));
+
+-- Reading a field forces a deform against the resolved descriptor.
+SELECT expanded_record_field_text(ROW(5, 'field')::expanded_comp, 1),
+       expanded_record_field_text(ROW(5, 'field')::expanded_comp, 2);
+
+DROP TYPE expanded_comp;

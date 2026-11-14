@@ -120,3 +120,59 @@ where
 	(data_hour = date_trunc('day',data_hour) and stat.schema_name || '.' ||stat.table_name not in (select table_nm_23 from tbls_daily_report_23))
 	and (stat.schema_name || '.' ||stat.table_name not in (select table_nm_onl_act from tbls_w_onl_actl_data))
 	or (stat.schema_name || '.' ||stat.table_name in (select table_nm_onl_act from tbls_w_onl_actl_data));
+
+-- ORCA should fallback when a CTE over a replicated table is referenced
+-- from multiple scalar subqueries.
+-- ss_t1 needs enough rows (40000) to push ORCA to the cross-slice plan;
+-- with fewer rows the bug does not manifest and the test would silently
+-- pass even without the fix.
+-- start_ignore
+DROP TABLE IF EXISTS ss_t1, ss_t2;
+-- end_ignore
+CREATE TABLE ss_t1 AS
+  SELECT generate_series(1, 40000) id
+  DISTRIBUTED BY (id);
+CREATE TABLE ss_t2 AS
+  SELECT * FROM (VALUES (1, 10), (2, 20)) AS v(id, v)
+  DISTRIBUTED REPLICATED;
+ANALYZE ss_t1;
+ANALYZE ss_t2;
+
+SET statement_timeout = '15s';
+WITH
+    cte1 AS (SELECT v FROM ss_t2 WHERE id = 1),
+    cte2 AS (SELECT v FROM ss_t2 WHERE id = 2)
+  SELECT (SELECT v FROM cte1) + (SELECT v FROM cte2) +
+         (SELECT v FROM cte1) + (SELECT v FROM cte2) AS result
+  FROM ss_t1
+  LIMIT 1;
+RESET statement_timeout;
+DROP TABLE ss_t1, ss_t2;
+
+-- A Shared Scan below a Partition Selector must be processed like any other
+-- Shared Scan. PartitionSelector used to be missed by is_plan_node(), so the
+-- shared input walker didn't descend into its subtree, and executing the
+-- query failed with "cannot execute alien Share Input Scan".
+CREATE TABLE ss_pt (a int, b int) DISTRIBUTED BY (a)
+  PARTITION BY RANGE (b) (START (0) END (10) EVERY (1));
+CREATE TABLE ss_t (a int, b int) DISTRIBUTED BY (a);
+INSERT INTO ss_pt SELECT i, i % 10 FROM generate_series(1, 1000) i;
+INSERT INTO ss_t SELECT i, i % 3 FROM generate_series(1, 30) i;
+ANALYZE ss_pt;
+ANALYZE ss_t;
+
+SET optimizer = off;
+SET gp_cte_sharing = on;
+EXPLAIN (COSTS OFF)
+WITH c AS (SELECT a, b FROM ss_t WHERE a < 20)
+SELECT count(*) FROM ss_pt JOIN c ON ss_pt.b = c.b
+UNION ALL
+SELECT count(*) FROM c;
+WITH c AS (SELECT a, b FROM ss_t WHERE a < 20)
+SELECT count(*) FROM ss_pt JOIN c ON ss_pt.b = c.b
+UNION ALL
+SELECT count(*) FROM c
+ORDER BY 1;
+RESET gp_cte_sharing;
+RESET optimizer;
+DROP TABLE ss_pt, ss_t;

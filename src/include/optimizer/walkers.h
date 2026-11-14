@@ -31,9 +31,9 @@ extern void exec_init_plan_tree_base(plan_tree_base_prefix *base, PlannedStmt *s
 extern Plan *plan_tree_base_subplan_get_plan(plan_tree_base_prefix *base, SubPlan *subplan);
 extern void plan_tree_base_subplan_put_plan(plan_tree_base_prefix *base, SubPlan *subplan, Plan *plan);
 
-extern bool walk_plan_node_fields(Plan *plan, bool (*walker) (), void *context);
+extern bool walk_plan_node_fields(Plan *plan, bool (*walker) (Node *, void *), void *context);
 
-extern bool plan_tree_walker(Node *node, bool (*walker) (), void *context, bool recurse_into_subplans);
+extern bool plan_tree_walker(Node *node, bool (*walker) (Node *, void *), void *context, bool recurse_into_subplans);
 
 /**
  * Useful functions that aggregate information from expressions or plans.
@@ -43,5 +43,6 @@ extern List *extract_nodes_plan(Plan *pl, int nodeTag, bool descendIntoSubquerie
 extern List *extract_nodes_expression(Node *node, int nodeTag, bool descendIntoSubqueries);
 extern int find_nodes(Node *node, List *nodeTags);
 extern int check_collation(Node *node);
+extern bool has_orderby_ordering_op(Query *query);
 
 #endif /* WALKERS_H_ */

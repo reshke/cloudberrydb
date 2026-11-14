@@ -7,6 +7,11 @@ SELECT '"abc
 def"'::json;					-- ERROR, unescaped newline in string constant
 SELECT '"\n\"\\"'::json;		-- OK, legal escapes
 SELECT '"\v"'::json;			-- ERROR, not a valid JSON escape
+
+-- Check fast path for longer strings (at least 16 bytes long)
+SELECT ('"'||repeat('.', 12)||'abc"')::json; -- OK
+SELECT ('"'||repeat('.', 12)||'abc\n"')::json; -- OK, legal escapes
+
 -- see json_encoding test for input with unicode escapes
 
 -- Numbers.
@@ -75,6 +80,11 @@ SELECT '{
 		"two":"two",
 		"averyveryveryveryveryveryveryveryveryverylongfieldname":}'::json;
 -- ERROR missing value for last field
+
+-- test non-error-throwing input
+select pg_input_is_valid('{"a":true}', 'json');
+select pg_input_is_valid('{"a":true', 'json');
+select * from pg_input_error_info('{"a":true', 'json');
 
 --constructors
 -- array_to_json
@@ -575,6 +585,11 @@ FROM (VALUES (1),(2)) v(i);
 SELECT * FROM
   json_populate_recordset(null::record, '[{"x": 776}]') AS (x int, y int);
 
+-- anonymous record type with variable rowtype
+SELECT i,
+  json_populate_recordset(r, '[{"f1":"10000","f2":"20000","f3":"30000"}]')
+FROM (VALUES (1, row(0,0)), (2, row(0,0,0)), (3, row(0,0))) v(i, r);
+
 -- empty array is a corner case
 SELECT json_populate_recordset(null::record, '[]');
 SELECT json_populate_recordset(row(1,2), '[]');
@@ -737,6 +752,9 @@ select json_object('{a,b,NULL,"d e f"}','{1,2,3,"a b c"}');
 -- empty key is allowed
 
 select json_object('{a,b,"","d e f"}','{1,2,3,"a b c"}');
+
+-- json_object_agg_unique requires unique keys
+select json_object_agg_unique(mod(i,100), i) from generate_series(0, 199) i;
 
 -- json_to_record and json_to_recordset
 

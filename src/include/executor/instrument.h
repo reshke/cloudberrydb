@@ -6,7 +6,7 @@
  *
  * Portions Copyright (c) 2006-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Copyright (c) 2001-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2023, PostgreSQL Global Development Group
  *
  * src/include/executor/instrument.h
  *
@@ -39,8 +39,10 @@ typedef struct BufferUsage
 	int64		local_blks_written; /* # of local disk blocks written */
 	int64		temp_blks_read; /* # of temp blocks read */
 	int64		temp_blks_written;	/* # of temp blocks written */
-	instr_time	blk_read_time;	/* time spent reading */
-	instr_time	blk_write_time; /* time spent writing */
+	instr_time	blk_read_time;	/* time spent reading blocks */
+	instr_time	blk_write_time; /* time spent writing blocks */
+	instr_time	temp_blk_read_time; /* time spent reading temp blocks */
+	instr_time	temp_blk_write_time;	/* time spent writing temp blocks */
 } BufferUsage;
 
 /*
@@ -62,7 +64,7 @@ typedef enum InstrumentOption
 {
 	INSTRUMENT_NONE = 0,
 	INSTRUMENT_TIMER = 1 << 0,	/* needs timer (and row counts) */
-	INSTRUMENT_BUFFERS = 1 << 1,	/* needs buffer usage (not implemented yet) */
+	INSTRUMENT_BUFFERS = 1 << 1,	/* needs buffer usage */
 	INSTRUMENT_ROWS = 1 << 2,	/* needs row count */
 	INSTRUMENT_WAL = 1 << 3,	/* needs WAL usage */
 	INSTRUMENT_MEMORY_DETAIL = 0x20000000,	/* needs detailed memory accounting */
@@ -133,6 +135,7 @@ extern void InstrAggNode(Instrumentation *dst, Instrumentation *add);
 extern void InstrStartParallelQuery(void);
 extern void InstrEndParallelQuery(BufferUsage *bufusage, WalUsage *walusage);
 extern void InstrAccumParallelQuery(BufferUsage *bufusage, WalUsage *walusage);
+extern void BufferUsageAdd(BufferUsage *dst, const BufferUsage *add);
 extern void BufferUsageAccumDiff(BufferUsage *dst,
 								 const BufferUsage *add, const BufferUsage *sub);
 extern void WalUsageAccumDiff(WalUsage *dst, const WalUsage *add,

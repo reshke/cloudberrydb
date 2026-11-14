@@ -120,6 +120,7 @@ RUN dnf makecache && \
         libcurl-devel \
         libssh2-devel \
         libevent-devel \
+        libicu-devel \
         libxml2-devel \
         libuuid-devel \
         libzstd-devel \
@@ -139,6 +140,8 @@ RUN dnf makecache && \
         liburing-devel \
         libuv-devel \
         libyaml-devel \
+        meson \
+        ninja-build \
         perl-IPC-Run \
         protobuf-devel && \
     dnf clean all && \
@@ -151,14 +154,14 @@ RUN dnf makecache && \
     make -j$(nproc) && \
     make install -C ~/xerces-c-${XERCES_LATEST_RELEASE} && \
     rm -rf ~/xerces-c* && \
-    cd && GO_VERSION="go1.23.4" && \
+    cd && GO_VERSION="go1.25.10" && \
     ARCH=$(uname -m) && \
     if [ "${ARCH}" = "aarch64" ]; then \
         GO_ARCH="arm64" && \
-        GO_SHA256="16e5017863a7f6071363782b1b8042eb12c6ca4f4cd71528b2123f0a1275b13e"; \
+        GO_SHA256="654da1f9b50a5d1c2a85ccf8ed405aa89c06e94d18384628bf186f7712677b08"; \
     elif [ "${ARCH}" = "x86_64" ]; then \
         GO_ARCH="amd64" && \
-        GO_SHA256="6924efde5de86fe277676e929dc9917d466efa02fb934197bc2eba35d5680971"; \
+        GO_SHA256="42d4f7a32316aa66591eca7e89867256057a4264451aca10570a715b3637ba70"; \
     else \
         echo "Unsupported architecture: ${ARCH}" && exit 1; \
     fi && \
@@ -170,6 +173,26 @@ RUN dnf makecache && \
     ln -s "/usr/local/${GO_VERSION}" /usr/local/go && \
     rm -f "${GO_VERSION}.linux-${GO_ARCH}.tar.gz" && \
     echo 'export PATH=$PATH:/usr/local/go/bin' | tee -a /etc/profile.d/go.sh > /dev/null
+
+# --------------------------------------------------------------------
+# Install Apache Arrow and Parquet C++ for contrib/datalake_fdw
+# --------------------------------------------------------------------
+# From the Arrow project's own repository, pinned: datalake_fdw shares
+# its ABI with Arrow, so the version moves only with a change here.
+# EPEL and CRB carry what the packages depend on (re2, thrift, ...).
+# The repository is left disabled afterwards, as EPEL is.
+# The release package needs nothing from a repository, so it goes in
+# with them all disabled: loading their metadata under QEMU took eight
+# minutes of an arm64 build.
+# --------------------------------------------------------------------
+ARG ARROW_VERSION=26.0.0
+RUN dnf install -y --disablerepo='*' \
+        https://packages.apache.org/artifactory/arrow/almalinux/9/apache-arrow-release-latest.rpm && \
+    dnf install -y --enablerepo=epel --enablerepo=crb \
+        arrow-devel-${ARROW_VERSION}-1.el9 \
+        parquet-devel-${ARROW_VERSION}-1.el9 && \
+    dnf config-manager --disable 'apache-arrow-*' && \
+    dnf clean all
 
 # --------------------------------------------------------------------
 # Copy Configuration Files and Setup the Environment

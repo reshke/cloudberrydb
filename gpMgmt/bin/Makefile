@@ -83,9 +83,9 @@ endif
 # This replaces the previously bundled tar.gz files to comply with Apache Release policy
 #
 MOCK_VERSION=1.0.1
-PYGRESQL_VERSION=5.2
-PSUTIL_VERSION=5.7.0
-PYYAML_VERSION=5.4.1
+PYGRESQL_VERSION=5.2.5
+PSUTIL_VERSION=7.2.2
+PYYAML_VERSION=6.0.1
 
 download-python-deps:
 	@echo "--- Downloading Python dependencies for gpMgmt modules"
@@ -111,8 +111,19 @@ download-python-deps:
 	else \
 		echo "PyGreSQL-$(PYGRESQL_VERSION).tar.gz already exists, skipping download"; \
 	fi
-	# Install wheel and cython for PyYAML building
-	pip3 install --user wheel "cython<3.0.0"
+	# Install wheel and cython for PyYAML building (only if not exists)
+	@if python3 -c "import wheel" >/dev/null 2>&1; then \
+		echo "wheel already exists, skipping installation"; \
+	else \
+		echo "Installing wheel..."; \
+		pip3 install --user wheel 2>/dev/null || pip3 install --user --break-system-packages wheel; \
+	fi
+	@if python3 -c "import cython" >/dev/null 2>&1; then \
+		echo "cython already exists, skipping installation"; \
+	else \
+		echo "Installing cython..."; \
+		pip3 install --user "cython<3.0.0" 2>/dev/null || pip3 install --user --break-system-packages "cython<3.0.0"; \
+	fi
 
 #
 # PyGreSQL
@@ -122,6 +133,7 @@ pygresql: download-python-deps
 	@echo "--- PyGreSQL"
 	cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(PYGRESQL_DIR).tar.gz
 	cd $(PYLIB_SRC_EXT)/$(PYGRESQL_DIR)/ && PATH=$(DESTDIR)$(bindir):$$PATH LDFLAGS='$(LDFLAGS) $(PYGRESQL_LDFLAGS)' python3 setup.py build
+	rm -f $(PYLIB_DIR)/_pg*.so
 	cp -r $(PYLIB_SRC_EXT)/$(PYGRESQL_DIR)/build/lib*-3*/* $(PYLIB_DIR)/
 
 #
@@ -133,6 +145,7 @@ psutil: download-python-deps
 ifeq "$(findstring $(BLD_ARCH),aix7_ppc_64 )" ""
 	cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(PSUTIL_DIR).tar.gz
 	cd $(PYLIB_SRC_EXT)/$(PSUTIL_DIR)/ && env -u CC python3 setup.py build
+	rm -rf $(PYLIB_DIR)/psutil
 	cp -r $(PYLIB_SRC_EXT)/$(PSUTIL_DIR)/build/lib.*/psutil $(PYLIB_DIR)
 endif
 
@@ -145,6 +158,8 @@ pyyaml: download-python-deps
 	@echo "--- pyyaml"
 	cd $(PYLIB_SRC_EXT)/ && $(TAR) xzf $(PYYAML_DIR).tar.gz
 	cd $(PYLIB_SRC_EXT)/$(PYYAML_DIR)/ && env -u CC CFLAGS="-w" python3 setup.py build
+	rm -rf $(PYLIB_DIR)/yaml
+	rm -f $(PYLIB_DIR)/_yaml*.so
 	cp -r $(PYLIB_SRC_EXT)/$(PYYAML_DIR)/build/lib*-3*/* $(PYLIB_DIR)/
 
 #

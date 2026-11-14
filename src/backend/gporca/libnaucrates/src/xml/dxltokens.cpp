@@ -112,6 +112,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenPhysical, GPOS_WSZ_LIT("OpPhysical")},
 
 		{EdxltokenPhysicalTableScan, GPOS_WSZ_LIT("TableScan")},
+		{EdxltokenPhysicalParallelTableScan, GPOS_WSZ_LIT("ParallelTableScan")},
 		{EdxltokenPhysicalBitmapTableScan, GPOS_WSZ_LIT("BitmapTableScan")},
 		{EdxltokenPhysicalDynamicBitmapTableScan,
 		 GPOS_WSZ_LIT("DynamicBitmapTableScan")},
@@ -136,6 +137,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenPhysicalResult, GPOS_WSZ_LIT("Result")},
 		{EdxltokenPhysicalValuesScan, GPOS_WSZ_LIT("Values")},
 		{EdxltokenPhysicalAppend, GPOS_WSZ_LIT("Append")},
+		{EdxltokenPhysicalParallelAppend, GPOS_WSZ_LIT("ParallelAppend")},
 		{EdxltokenPhysicalMaterialize, GPOS_WSZ_LIT("Materialize")},
 		{EdxltokenPhysicalDynamicForeignScan,
 		 GPOS_WSZ_LIT("DynamicForeignScan")},
@@ -368,6 +370,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenAggrefOid, GPOS_WSZ_LIT("AggMdid")},
 		{EdxltokenAggrefDistinct, GPOS_WSZ_LIT("AggDistinct")},
 		{EdxltokenAggrefIsAggStar, GPOS_WSZ_LIT("AggStar")},
+		{EdxltokenAggrefIsPresorted, GPOS_WSZ_LIT("AggPresorted")},
 		{EdxltokenAggrefArgTypes, GPOS_WSZ_LIT("AggArgTypes")},
 		{EdxltokenAggrefKind, GPOS_WSZ_LIT("AggKind")},
 		{EdxltokenAggrefStage, GPOS_WSZ_LIT("AggStage")},
@@ -420,6 +423,7 @@ CDXLTokens::Init(CMemoryPool *mp)
 		{EdxltokenColNdvBySeg, GPOS_WSZ_LIT("NdvBySeg")},
 
 		{EdxltokenParamId, GPOS_WSZ_LIT("ParamId")},
+		{EdxltokenParallelWorkers, GPOS_WSZ_LIT("ParallelWorkers")},
 
 		{EdxltokenCtidColName, GPOS_WSZ_LIT("ctid")},
 		{EdxltokenOidColName, GPOS_WSZ_LIT("oid")},
@@ -711,6 +715,8 @@ CDXLTokens::Init(CMemoryPool *mp)
 		 GPOS_WSZ_LIT("IntermediateResultType")},
 		{EdxltokenGPDBAggSplittable, GPOS_WSZ_LIT("IsSplittable")},
 		{EdxltokenGPDBAggHashAggCapable, GPOS_WSZ_LIT("HashAggCapable")},
+		{EdxltokenGPDBAggFinalFuncVolatile, GPOS_WSZ_LIT("FinalFuncVolatile")},
+		{EdxltokenGPDBAggOrderInsensitive, GPOS_WSZ_LIT("OrderInsensitive")},
 
 		{EdxltokenGPDBCast, GPOS_WSZ_LIT("MDCast")},
 		{EdxltokenGPDBCastBinaryCoercible, GPOS_WSZ_LIT("BinaryCoercible")},

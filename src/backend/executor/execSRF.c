@@ -7,7 +7,7 @@
  * common code for calling set-returning functions according to the
  * ReturnSetInfo API.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,6 +20,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/objectaccess.h"
+#include "catalog/pg_proc.h"
 #include "executor/execdebug.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -44,6 +45,7 @@ static void ExecPrepareTuplestoreResult(SetExprState *sexpr,
 										ExprContext *econtext,
 										Tuplestorestate *resultStore,
 										TupleDesc resultDesc);
+static void ExecReleaseTuplestoreResult(SetExprState *sexpr);
 static void tupledesc_match(TupleDesc dst_tupdesc, TupleDesc src_tupdesc);
 
 
@@ -263,7 +265,7 @@ ExecMakeTableFunctionResult(SetExprState *setexpr,
 			if (first_time)
 			{
 				MemoryContext oldcontext =
-				MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
+					MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
 
 				tupstore = tuplestore_begin_heap(randomAccess, false, operatorMemKB);
 				rsinfo.setResult = tupstore;
@@ -293,7 +295,7 @@ ExecMakeTableFunctionResult(SetExprState *setexpr,
 					if (tupdesc == NULL)
 					{
 						MemoryContext oldcontext =
-						MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
+							MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
 
 						/*
 						 * This is the first non-NULL result from the
@@ -398,7 +400,7 @@ no_function_result:
 	if (rsinfo.setResult == NULL)
 	{
 		MemoryContext oldcontext =
-		MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
+			MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
 
 		tupstore = tuplestore_begin_heap(randomAccess, false, work_mem);
 		rsinfo.setResult = tupstore;
@@ -554,8 +556,7 @@ restart:
 			}
 		}
 		/* Exhausted the tuplestore, so clean up */
-		tuplestore_end(fcache->funcResultStore);
-		fcache->funcResultStore = NULL;
+		ExecReleaseTuplestoreResult(fcache);
 		*isDone = ExprEndResult;
 		*isNull = true;
 		return (Datum) 0;
@@ -705,7 +706,7 @@ init_sexpr(Oid foid, Oid input_collation, Expr *node,
 	size_t		numargs = list_length(sexpr->args);
 
 	/* Check permission to call function */
-	aclresult = pg_proc_aclcheck(foid, GetUserId(), ACL_EXECUTE);
+	aclresult = object_aclcheck(ProcedureRelationId, foid, GetUserId(), ACL_EXECUTE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_FUNCTION, get_func_name(foid));
 	InvokeFunctionExecuteHook(foid);
@@ -815,14 +816,16 @@ ShutdownSetExpr(Datum arg)
 {
 	SetExprState *sexpr = castNode(SetExprState, DatumGetPointer(arg));
 
-	/* If we have a slot, make sure it's let go of any tuplestore pointer */
+	/* Release any open tuplestore */
+	ExecReleaseTuplestoreResult(sexpr);
+
+	/*
+	 * If each invocation of the function can return a different row type,
+	 * ExecReleaseTuplestoreResult will have already dropped the slot.  If
+	 * not, we must clear it here.
+	 */
 	if (sexpr->funcResultSlot)
 		ExecClearTuple(sexpr->funcResultSlot);
-
-	/* Release any open tuplestore */
-	if (sexpr->funcResultStore)
-		tuplestore_end(sexpr->funcResultStore);
-	sexpr->funcResultStore = NULL;
 
 	/* Clear any active set-argument state */
 	sexpr->setArgsValid = false;
@@ -870,6 +873,13 @@ ExecPrepareTuplestoreResult(SetExprState *sexpr,
 							Tuplestorestate *resultStore,
 							TupleDesc resultDesc)
 {
+	/*
+	 * Any previous result must have been released.  In particular, a slot not
+	 * built from funcResultDesc must not survive to be reused here.
+	 */
+	Assert(sexpr->funcResultStore == NULL);
+	Assert(sexpr->funcResultDesc != NULL || sexpr->funcResultSlot == NULL);
+
 	sexpr->funcResultStore = resultStore;
 
 	if (sexpr->funcResultSlot == NULL)
@@ -931,6 +941,40 @@ ExecPrepareTuplestoreResult(SetExprState *sexpr,
 									PointerGetDatum(sexpr));
 		sexpr->shutdown_reg = true;
 	}
+}
+
+/*
+ *		ExecReleaseTuplestoreResult
+ *
+ * Release a tuplestore function result set up by ExecPrepareTuplestoreResult,
+ * if any.
+ */
+static void
+ExecReleaseTuplestoreResult(SetExprState *sexpr)
+{
+	/*
+	 * A slot built from a per-invocation record descriptor describes only
+	 * this materialized result and owns a private copy of its descriptor.
+	 * Drop it with the tuplestore so the next invocation builds a slot from
+	 * its own result descriptor.
+	 */
+	if (sexpr->funcResultSlot && sexpr->funcResultDesc == NULL)
+	{
+		TupleDesc	slotDesc = sexpr->funcResultSlot->tts_tupleDescriptor;
+
+		ExecDropSingleTupleTableSlot(sexpr->funcResultSlot);
+		sexpr->funcResultSlot = NULL;
+
+		/*
+		 * The slot's descriptor is not reference counted, so we have to free
+		 * the memory manually.
+		 */
+		FreeTupleDesc(slotDesc);
+	}
+
+	if (sexpr->funcResultStore)
+		tuplestore_end(sexpr->funcResultStore);
+	sexpr->funcResultStore = NULL;
 }
 
 /*

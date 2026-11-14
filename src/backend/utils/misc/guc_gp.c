@@ -153,7 +153,10 @@ bool		enable_parallel_semi_join = true;
 bool		enable_parallel_dedup_semi_join = true;
 bool		enable_parallel_dedup_semi_reverse_join = true;
 bool		parallel_query_use_streaming_hashagg = false;
+bool		optimizer_enable_child_opt_memo = true;
+bool		optimizer_verify_child_opt_memo = false;
 bool		gp_use_streaming_hashagg = true;
+bool		optimizer_use_streaming_hashagg = true;
 int			gp_appendonly_insert_files = 0;
 int			gp_appendonly_insert_files_tuples_range = 0;
 int			gp_random_insert_segments = 0;
@@ -169,7 +172,7 @@ bool		Debug_datumstream_block_read_check_integrity = false;
 bool		Debug_datumstream_block_write_check_integrity = false;
 bool		Debug_datumstream_read_print_varlena_info = false;
 bool		Debug_datumstream_write_use_small_initial_buffers = false;
-bool		gp_create_table_random_default_distribution = true;
+bool		gp_create_table_random_default_distribution = false;
 bool		gp_allow_non_uniform_partitioning_ddl = true;
 bool		gp_print_create_gang_time = false;
 int			dtx_phase2_retry_second = 0;
@@ -332,6 +335,7 @@ bool		optimizer_enable_motion_gather;
 bool		optimizer_enable_motion_redistribute;
 bool		optimizer_enable_sort;
 bool		optimizer_enable_materialize;
+bool		optimizer_enable_parallel_append;
 bool		optimizer_enable_partition_propagation;
 bool		optimizer_enable_partition_selection;
 bool		optimizer_enable_outerjoin_rewrite;
@@ -427,6 +431,7 @@ bool		optimizer_enable_range_predicate_dpe;
 bool		optimizer_enable_use_distribution_in_dqa;
 bool		optimizer_enable_push_join_below_union_all;
 bool		optimizer_enable_orderedagg;
+bool		optimizer_enable_presorted_agg;
 bool		optimizer_disable_dynamic_table_scan;
 
 /* Analyze related GUCs for Optimizer */
@@ -1910,6 +1915,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
+		{"optimizer_use_streaming_hashagg", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Use streaming hash agg in ORCA-generated local partial hash aggregations."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_use_streaming_hashagg,
+		true, NULL, NULL
+	},
+
+	{
 		{"gp_force_random_redistribution", PGC_USERSET, CUSTOM_OPTIONS,
 			gettext_noop("Force redistribution of insert for randomly-distributed."),
 			NULL,
@@ -2259,6 +2274,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 		},
 		&optimizer_enable_materialize,
 		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"optimizer_enable_parallel_append", PGC_USERSET, DEVELOPER_OPTIONS,
+		 gettext_noop("Enable parallel append for seq/bitmap/index scan in partition table."),
+		 NULL,
+		 GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_enable_parallel_append,
+		false,
 		NULL, NULL, NULL
 	},
 	{
@@ -3002,15 +3027,6 @@ struct config_bool ConfigureNamesBool_gp[] =
 	},
 
 	{
-		{"stats_queue_level", PGC_SUSET, STATS_COLLECTOR,
-			gettext_noop("Collects resource queue-level statistics on database activity."),
-			NULL
-		},
-		&pgstat_collect_queuelevel,
-		false, NULL, NULL
-	},
-
-	{
 		{"create_restartpoint_on_ckpt_record_replay", PGC_SIGHUP, DEVELOPER_OPTIONS,
 			gettext_noop("Creates a restartpoint only on mirror immediately after replaying a checkpoint record."),
 			NULL
@@ -3055,6 +3071,18 @@ struct config_bool ConfigureNamesBool_gp[] =
 			NULL
 		},
 		&optimizer_enable_orderedagg,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"optimizer_enable_presorted_agg", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Enable sorting the input of order sensitive aggregates "
+						 "with ORDER BY, e.g. string_agg(), on the segments, for "
+						 "aggregates without GROUP BY."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_enable_presorted_agg,
 		true,
 		NULL, NULL, NULL
 	},
@@ -3234,6 +3262,26 @@ struct config_bool ConfigureNamesBool_gp[] =
 		true,
 		NULL, NULL, NULL
 	},
+	{
+		{"optimizer_enable_child_opt_memo", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Reuse the child contexts that the same request of a group expression reached under another context."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_enable_child_opt_memo,
+		true, NULL, NULL
+	},
+
+	{
+		{"optimizer_verify_child_opt_memo", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Optimize the children of requests that could reuse child contexts and report differences."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&optimizer_verify_child_opt_memo,
+		false, NULL, NULL
+	},
+
 	{
 		{"parallel_query_use_streaming_hashagg", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("allow to use of streaming hashagg in parallel query for DISTINCT."),
@@ -4073,7 +4121,7 @@ struct config_int ConfigureNamesInt_gp[] =
 			gettext_noop("Used by the fts-probe process."),
 		},
 		&gp_fts_probe_retries,
-		5, 0, 100,
+		60, 0, 100,
 		NULL, NULL, NULL
 	},
 
@@ -4084,7 +4132,7 @@ struct config_int ConfigureNamesInt_gp[] =
 			GUC_UNIT_S
 		},
 		&gp_fts_probe_timeout,
-		20, 0, 3600,
+		40, 0, 3600,
 		NULL, NULL, NULL
 	},
 
@@ -4272,7 +4320,7 @@ struct config_int ConfigureNamesInt_gp[] =
 		{"gp_resqueue_priority_local_interval", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("A measure of how often a backend process must consider backing off."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_local_interval,
 		100000, 500, INT_MAX,
@@ -4291,7 +4339,7 @@ struct config_int ConfigureNamesInt_gp[] =
 		{"gp_resqueue_priority_inactivity_timeout", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("If a backend does not report progress in this time (in ms), it is deemed inactive."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_inactivity_timeout,
 		2000, 500, INT_MAX,
@@ -4301,7 +4349,7 @@ struct config_int ConfigureNamesInt_gp[] =
 		{"gp_resqueue_priority_grouping_timeout", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("A backend gives up on finding a better group leader after this timeout (in ms)."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_grouping_timeout,
 		1000, 1000, INT_MAX,
@@ -4926,7 +4974,7 @@ struct config_string ConfigureNamesString_gp[] =
 		{"gp_resqueue_priority_default_value", PGC_POSTMASTER, RESOURCES_MGM,
 			gettext_noop("Default weight when one cannot be associated with a statement."),
 			NULL,
-			GUC_NO_SHOW_ALL
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_resqueue_priority_default_value,
 		"MEDIUM",
@@ -4936,7 +4984,7 @@ struct config_string ConfigureNamesString_gp[] =
 	{
 		{"gp_resource_manager", PGC_POSTMASTER, RESOURCES,
 			gettext_noop("Sets the type of resource manager."),
-			gettext_noop("Only support \"queue\" and \"group\" for now.")
+			gettext_noop("Only support \"queue\", \"group\" and \"group-v2\" for now.")
 		},
 		&gp_resource_manager_str,
 		"queue",
@@ -5392,62 +5440,72 @@ static int guc_array_compare(const void *a, const void *b)
 	return guc_name_compare(namea, nameb);
 }
 
-void gpdb_assign_sync_flag(struct config_generic **guc_variables, int size, bool predefine)
+void gpdb_assign_sync_flag_one(struct config_generic *var, bool predefine)
 {
 	static bool init = false;
 	/* ordering guc_name_array alphabets */
 	if (!init) {
 		sync_guc_num = sizeof(sync_guc_names_array) / sizeof(char *);
 		qsort((void *) sync_guc_names_array, sync_guc_num,
-		      sizeof(char *), guc_array_compare);
+			  sizeof(char *), guc_array_compare);
 
 		unsync_guc_num = sizeof(unsync_guc_names_array) / sizeof(char *);
 		qsort((void *) unsync_guc_names_array, unsync_guc_num,
-		      sizeof(char *), guc_array_compare);
+			  sizeof(char *), guc_array_compare);
 
 		init = true;
 	}
 
-	for (int i = 0; i < size; i ++)
+	/* if the sync flags is defined in guc variable, skip it */
+	if (var->flags & (GUC_GPDB_NEED_SYNC | GUC_GPDB_NO_SYNC))
+		return;
+
+	char *res = (char *) bsearch((void *) &var->name,
+								 (void *) sync_guc_names_array,
+								 sync_guc_num,
+								 sizeof(char *),
+								 guc_array_compare);
+	if (!res)
 	{
-		struct config_generic *var = guc_variables[i];
+		res = (char *) bsearch((void *) &var->name,
+									 (void *) unsync_guc_names_array,
+									 unsync_guc_num,
+									 sizeof(char *),
+									 guc_array_compare);
 
-		/* if the sync flags is defined in guc variable, skip it */
-		if (var->flags & (GUC_GPDB_NEED_SYNC | GUC_GPDB_NO_SYNC))
-			continue;
-
-		char *res = (char *) bsearch((void *) &var->name,
-		                             (void *) sync_guc_names_array,
-		                             sync_guc_num,
-		                             sizeof(char *),
-		                             guc_array_compare);
-		if (!res)
+		/* for predefined guc, we force its name in one array.
+		 * for the third-part libraries gucs introduced by customer
+		 * we assign unsync flags as default.
+		 */
+		if (!res && predefine)
 		{
-			char *res = (char *) bsearch((void *) &var->name,
-			                             (void *) unsync_guc_names_array,
-			                             unsync_guc_num,
-			                             sizeof(char *),
-			                             guc_array_compare);
-
-			/* for predefined guc, we force its name in one array.
-			 * for the third-part libraries gucs introduced by customer
-			 * we assign unsync flags as default.
-			 */
-			if (!res && predefine)
-			{
-				ereport(ERROR,
-				        (errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Neither sync_guc_names_array nor "
-								"unsync_guc_names_array contains predefined "
-								"guc name: %s", var->name)));
-			}
-
-			var->flags |= GUC_GPDB_NO_SYNC;
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+							errmsg("Neither sync_guc_names_array nor "
+								   "unsync_guc_names_array contains predefined "
+								   "guc name: %s", var->name)));
 		}
-		else
-		{
-			var->flags |= GUC_GPDB_NEED_SYNC;
-		}
+
+		var->flags |= GUC_GPDB_NO_SYNC;
+	}
+	else
+	{
+		var->flags |= GUC_GPDB_NEED_SYNC;
+	}
+}
+
+void gpdb_assign_sync_flag(HTAB *guc_tab)
+{
+	HASH_SEQ_STATUS status;
+	GUCHashEntry *entry;
+
+	hash_seq_init(&status, guc_tab);
+	while((entry = hash_seq_search(&status)) != NULL)
+	{
+		struct config_generic *var;
+
+		var = entry->gucvar;
+		gpdb_assign_sync_flag_one(var, true);
 	}
 }
 
@@ -5610,7 +5668,7 @@ storageOptToString(const StdRdOptions *ao_opts)
 	}
 	appendStringInfo(&buf, "%s=%s", SOPT_CHECKSUM,
 					 ao_opts->checksum ? "true" : "false");
-	ret = strdup(buf.data);
+	ret = guc_strdup(ERROR, buf.data);
 	if (ret == NULL)
 		elog(ERROR, "out of memory");
 	pfree(buf.data);
@@ -5627,12 +5685,14 @@ check_gp_default_storage_options(char **newval, void **extra, GucSource source)
 	/* Value of "appendonly" option if one is specified. */
 	StdRdOptions *newopts;
 
-	newopts = calloc(sizeof(*newopts), 1);
+	newopts = guc_malloc(ERROR, sizeof(*newopts));
 	if (!newopts)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of memory")));
 
+	memset(newopts, 0, sizeof(*newopts));
+	
 	resetAOStorageOpts(newopts);
 
 	/*
@@ -5653,7 +5713,7 @@ check_gp_default_storage_options(char **newval, void **extra, GucSource source)
 	 * appendonly storage options.
 	 */
 
-	free(*newval);
+	guc_free(*newval);
 	*newval = storageOptToString(newopts);
 	*extra = newopts;
 
@@ -5680,7 +5740,7 @@ assign_gp_default_storage_options(const char *newval, void *extra)
 void
 set_gp_replication_config(const char *name, const char *value)
 {
-	A_Const aconst = {.type = T_A_Const, .val = {.type = T_String, .val.str = pstrdup(value)}};
+	A_Const aconst = {.type = T_A_Const, .val = {.sval = {.type = T_String, .sval = pstrdup(value)}}};
 	List *args = list_make1(&aconst);
 	VariableSetStmt setstmt = {.type = T_VariableSetStmt, .kind = VAR_SET_VALUE, .name = pstrdup(name), .args = args};
 	AlterSystemStmt alterSystemStmt = {.type = T_AlterSystemStmt, .setstmt = &setstmt};

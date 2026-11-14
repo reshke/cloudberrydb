@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 #include "cdb/cdbvars.h"
 #include "optimizer/clauses.h"
+#include "optimizer/walkers.h"
 #include "parser/parsetree.h"
 #include "tcop/pquery.h"
 
@@ -54,6 +55,7 @@ typedef struct PolicyAutoContext
  * Forward declarations.
  */
 static bool PolicyAutoPrelimWalker(Node *node, PolicyAutoContext *context);
+static bool PolicyAutoPrelimBranches(Append *append, PolicyAutoContext *context);
 static bool	PolicyAutoAssignWalker(Node *node, PolicyAutoContext *context);
 static bool IsAggMemoryIntensive(Agg *agg);
 static bool IsMemoryIntensiveOperator(Node *node, PlannedStmt *stmt);
@@ -243,6 +245,7 @@ IsMemoryIntensiveOperator(Node *node, PlannedStmt *stmt)
 	{
 		case T_Material:
 		case T_Sort:
+		case T_IncrementalSort:
 		case T_ShareInputScan:
 		case T_Hash:
 		case T_BitmapIndexScan:
@@ -267,6 +270,23 @@ IsMemoryIntensiveOperator(Node *node, PlannedStmt *stmt)
 }
 
 /*
+ * RunsBranchesOneAtATime
+ *    Return true if the given node runs its branches one after another.
+ *
+ * Only one branch of such a node runs at a time, so memory is reserved for
+ * its largest branch instead of the sum of all branches.  Otherwise a table
+ * with hundreds of partitions needs tens of megabytes just to start a query.
+ *
+ * This holds for an Append.  Asynchronous branches run together, and a
+ * MergeAppend reads all branches at once, so those do not count.
+ */
+static bool
+RunsBranchesOneAtATime(Node *node)
+{
+	return IsA(node, Append) && ((Append *) node)->nasyncplans == 0;
+}
+
+/*
  * IsRootOperatorInGroup
  *    Return true if the given node is the root operator in an operator group.
  *
@@ -287,6 +307,16 @@ IsRootOperatorInGroup(Node *node)
  * in a plan.
  */
 
+static bool PolicyAutoPrelimWalker(Node *node, PolicyAutoContext *context);
+static bool PolicyAutoAssignWalker(Node *node, PolicyAutoContext *context);
+static bool PolicyEagerFreePrelimWalker(Node *node, PolicyEagerFreeContext *context);
+static bool PolicyEagerFreeAssignWalker(Node *node, PolicyEagerFreeContext *context);
+
+static bool PolicyAutoPrelimWalker_adapter(Node *node, void *context);
+static bool PolicyAutoAssignWalker_adapter(Node *node, void *context);
+static bool PolicyEagerFreePrelimWalker_adapter(Node *node, void *context);
+static bool PolicyEagerFreeAssignWalker_adapter(Node *node, void *context);
+
 static bool PolicyAutoPrelimWalker(Node *node, PolicyAutoContext *context)
 {
 	if (node == NULL)
@@ -305,8 +335,53 @@ static bool PolicyAutoPrelimWalker(Node *node, PolicyAutoContext *context)
 		{
 			context->numNonMemIntensiveOperators++;
 		}
+
+		if (RunsBranchesOneAtATime(node))
+		{
+			return PolicyAutoPrelimBranches((Append *) node, context);
+		}
 	}
-	return plan_tree_walker(node, PolicyAutoPrelimWalker, context, true);
+	return plan_tree_walker(node, PolicyAutoPrelimWalker_adapter, context, true);
+}
+
+/*
+ * PolicyAutoPrelimBranches
+ *    Count the operators of an Append, keeping only its largest branch.
+ *    See RunsBranchesOneAtATime().
+ */
+static bool
+PolicyAutoPrelimBranches(Append *append, PolicyAutoContext *context)
+{
+	uint64		baseMemIntense;
+	uint64		baseNonMemIntense;
+	uint64		maxMemIntense = 0;
+	uint64		maxNonMemIntense = 0;
+	ListCell   *lc;
+
+	if (walk_plan_node_fields((Plan *) append, PolicyAutoPrelimWalker_adapter, context))
+		return true;
+
+	baseMemIntense = context->numMemIntensiveOperators;
+	baseNonMemIntense = context->numNonMemIntensiveOperators;
+
+	foreach(lc, append->appendplans)
+	{
+		context->numMemIntensiveOperators = baseMemIntense;
+		context->numNonMemIntensiveOperators = baseNonMemIntense;
+
+		if (PolicyAutoPrelimWalker((Node *) lfirst(lc), context))
+			return true;
+
+		maxMemIntense = Max(maxMemIntense,
+							context->numMemIntensiveOperators - baseMemIntense);
+		maxNonMemIntense = Max(maxNonMemIntense,
+							   context->numNonMemIntensiveOperators - baseNonMemIntense);
+	}
+
+	context->numMemIntensiveOperators = baseMemIntense + maxMemIntense;
+	context->numNonMemIntensiveOperators = baseNonMemIntense + maxNonMemIntense;
+
+	return false;
 }
 
 /**
@@ -350,7 +425,7 @@ static bool PolicyAutoAssignWalker(Node *node, PolicyAutoContext *context)
 			elog(GP_RESMANAGER_MEMORY_LOG_LEVEL, "assigning plan node memory = %dKB", (int )planNode->operatorMemKB);
 		}
 	}
-	return plan_tree_walker(node, PolicyAutoAssignWalker, context, true);
+	return plan_tree_walker(node, PolicyAutoAssignWalker_adapter, context, true);
 }
 
 /**
@@ -679,6 +754,9 @@ ComputeMemLimitForChildGroups(OperatorGroupNode *parentGroupNode)
  * node (except for the leaves of the leave groups). At the same time,
  * we collect some stats information about operators in each group.
  */
+static bool PolicyEagerFreePrelimBranches(Append *append,
+										  PolicyEagerFreeContext *context);
+
 static bool
 PolicyEagerFreePrelimWalker(Node *node, PolicyEagerFreeContext *context)
 {
@@ -715,7 +793,12 @@ PolicyEagerFreePrelimWalker(Node *node, PolicyEagerFreeContext *context)
 		}
 	}
 
-	bool result = plan_tree_walker(node, PolicyEagerFreePrelimWalker, context, true);
+	bool result;
+
+	if (is_plan_node(node) && RunsBranchesOneAtATime(node))
+		result = PolicyEagerFreePrelimBranches((Append *) node, context);
+	else
+		result = plan_tree_walker(node, PolicyEagerFreePrelimWalker_adapter, context, true);
 	Assert(!result);
 
 	/*
@@ -751,6 +834,55 @@ PolicyEagerFreePrelimWalker(Node *node, PolicyEagerFreeContext *context)
 	}
 
 	return result;
+}
+
+/*
+ * PolicyEagerFreePrelimBranches
+ *    Same as PolicyAutoPrelimBranches(), for the eager free policy.
+ *
+ * Only operators in the Append's own group are counted this way.  A branch
+ * that starts its own group, for example with a sort, is still added in full,
+ * so we may reserve a little too much, but never too little.
+ *
+ * Visit the branches in the same order as plan_tree_walker(), so the groups
+ * get the same numbers when the memory is assigned later.
+ */
+static bool
+PolicyEagerFreePrelimBranches(Append *append, PolicyEagerFreeContext *context)
+{
+	OperatorGroupNode *groupNode = context->groupNode;
+	uint64		baseMemIntense;
+	uint64		baseNonMemIntense;
+	uint64		maxMemIntense = 0;
+	uint64		maxNonMemIntense = 0;
+	ListCell   *lc;
+
+	Assert(groupNode != NULL);
+
+	if (walk_plan_node_fields((Plan *) append, PolicyEagerFreePrelimWalker_adapter, context))
+		return true;
+
+	baseMemIntense = groupNode->numMemIntenseOps;
+	baseNonMemIntense = groupNode->numNonMemIntenseOps;
+
+	foreach(lc, append->appendplans)
+	{
+		groupNode->numMemIntenseOps = baseMemIntense;
+		groupNode->numNonMemIntenseOps = baseNonMemIntense;
+
+		if (PolicyEagerFreePrelimWalker((Node *) lfirst(lc), context))
+			return true;
+
+		maxMemIntense = Max(maxMemIntense,
+							groupNode->numMemIntenseOps - baseMemIntense);
+		maxNonMemIntense = Max(maxNonMemIntense,
+							   groupNode->numNonMemIntenseOps - baseNonMemIntense);
+	}
+
+	groupNode->numMemIntenseOps = baseMemIntense + maxMemIntense;
+	groupNode->numNonMemIntenseOps = baseNonMemIntense + maxNonMemIntense;
+
+	return false;
 }
 
 /*
@@ -820,7 +952,7 @@ PolicyEagerFreeAssignWalker(Node *node, PolicyEagerFreeContext *context)
 		}
 	}
 
-	bool result = plan_tree_walker(node, PolicyEagerFreeAssignWalker, context, true);
+	bool result = plan_tree_walker(node, PolicyEagerFreeAssignWalker_adapter, context, true);
 	Assert(!result);
 
 	/*
@@ -833,6 +965,30 @@ PolicyEagerFreeAssignWalker(Node *node, PolicyEagerFreeContext *context)
 	}
 
 	return result;
+}
+
+static bool
+PolicyAutoPrelimWalker_adapter(Node *node, void *context)
+{
+	return PolicyAutoPrelimWalker(node, (PolicyAutoContext *) context);
+}
+
+static bool
+PolicyAutoAssignWalker_adapter(Node *node, void *context)
+{
+	return PolicyAutoAssignWalker(node, (PolicyAutoContext *) context);
+}
+
+static bool
+PolicyEagerFreePrelimWalker_adapter(Node *node, void *context)
+{
+	return PolicyEagerFreePrelimWalker(node, (PolicyEagerFreeContext *) context);
+}
+
+static bool
+PolicyEagerFreeAssignWalker_adapter(Node *node, void *context)
+{
+	return PolicyEagerFreeAssignWalker(node, (PolicyEagerFreeContext *) context);
 }
 
 /*

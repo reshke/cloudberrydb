@@ -3,7 +3,7 @@
  * nodeIncrementalSort.c
  *	  Routines to handle incremental sorting of relations.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -69,7 +69,7 @@
  *	the entire result set is available.
  *
  *	The hybrid mode approach allows us to optimize for both very small
- *	groups (where the overhead of a new tuplesort is high) and very	large
+ *	groups (where the overhead of a new tuplesort is high) and very large
  *	groups (where we can lower cost by not having to sort on already sorted
  *	columns), albeit at some extra cost while switching between modes.
  *
@@ -105,12 +105,14 @@
 				Assert(IsParallelWorker()); \
 				Assert(ParallelWorkerNumber <= (node)->shared_info->num_workers); \
 				instrumentSortedGroup(&(node)->shared_info->sinfo[ParallelWorkerNumber].groupName##GroupInfo, \
-									  (node)->groupName##_state); \
+									  (node)->groupName##_state, \
+									  (node)->ss.ps.instrument); \
 			} \
 			else \
 			{ \
 				instrumentSortedGroup(&(node)->incsort_info.groupName##GroupInfo, \
-									  (node)->groupName##_state); \
+									  (node)->groupName##_state, \
+									  (node)->ss.ps.instrument); \
 			} \
 		} \
 	} while (0)
@@ -126,7 +128,8 @@
  */
 static void
 instrumentSortedGroup(IncrementalSortGroupInfo *groupInfo,
-					  Tuplesortstate *sortState)
+					  Tuplesortstate *sortState,
+					  Instrumentation *instr)
 {
 	TuplesortInstrumentation sort_instr;
 
@@ -149,6 +152,26 @@ instrumentSortedGroup(IncrementalSortGroupInfo *groupInfo,
 				groupInfo->maxMemorySpaceUsed = sort_instr.spaceUsed;
 
 			break;
+	}
+
+	/*
+	 * GPDB: remember how much memory the batches of this node used, and the
+	 * largest work_mem any single batch would have needed to stay in memory,
+	 * so that EXPLAIN ANALYZE can report "Memory used" and "Memory wanted".
+	 */
+	if ((int64) sort_instr.workmemused > groupInfo->maxWorkmemUsed)
+		groupInfo->maxWorkmemUsed = sort_instr.workmemused;
+	if ((int64) sort_instr.workmemwanted > groupInfo->maxWorkmemWanted)
+		groupInfo->maxWorkmemWanted = sort_instr.workmemwanted;
+
+	if (instr != NULL)
+	{
+		if (instr->workmemused < groupInfo->maxWorkmemUsed)
+			instr->workmemused = groupInfo->maxWorkmemUsed;
+		if (instr->workmemwanted < groupInfo->maxWorkmemWanted)
+			instr->workmemwanted = groupInfo->maxWorkmemWanted;
+		if (sort_instr.spaceType == SORT_SPACE_TYPE_DISK)
+			instr->workfileCreated = true;
 	}
 
 	/* Track each sort method we've used. */
@@ -313,9 +336,9 @@ switchToPresortedPrefixMode(PlanState *pstate)
 												&(plannode->sort.sortOperators[nPresortedCols]),
 												&(plannode->sort.collations[nPresortedCols]),
 												&(plannode->sort.nullsFirst[nPresortedCols]),
-												work_mem,
+												PlanStateOperatorMemKB((PlanState *) node),
 												NULL,
-												false);
+												node->bounded ? TUPLESORT_ALLOWBOUNDED : TUPLESORT_NONE);
 		node->prefixsort_state = prefixsort_state;
 	}
 	else
@@ -614,9 +637,11 @@ ExecIncrementalSort(PlanState *pstate)
 												  plannode->sort.sortOperators,
 												  plannode->sort.collations,
 												  plannode->sort.nullsFirst,
-												  work_mem,
+												  PlanStateOperatorMemKB((PlanState *) node),
 												  NULL,
-												  false);
+												  node->bounded ?
+												  TUPLESORT_ALLOWBOUNDED :
+												  TUPLESORT_NONE);
 			node->fullsort_state = fullsort_state;
 		}
 		else
@@ -1005,9 +1030,9 @@ ExecInitIncrementalSort(IncrementalSort *node, EState *estate, int eflags)
 	if (incrsortstate->ss.ps.instrument != NULL)
 	{
 		IncrementalSortGroupInfo *fullsortGroupInfo =
-		&incrsortstate->incsort_info.fullsortGroupInfo;
+			&incrsortstate->incsort_info.fullsortGroupInfo;
 		IncrementalSortGroupInfo *prefixsortGroupInfo =
-		&incrsortstate->incsort_info.prefixsortGroupInfo;
+			&incrsortstate->incsort_info.prefixsortGroupInfo;
 
 		fullsortGroupInfo->groupCount = 0;
 		fullsortGroupInfo->maxDiskSpaceUsed = 0;
@@ -1138,7 +1163,6 @@ ExecReScanIncrementalSort(IncrementalSortState *node)
 	node->outerNodeDone = false;
 	node->n_fullsort_remaining = 0;
 	node->bound_Done = 0;
-	node->presorted_keys = NULL;
 
 	node->execution_status = INCSORT_LOADFULLSORT;
 
@@ -1151,15 +1175,9 @@ ExecReScanIncrementalSort(IncrementalSortState *node)
 	 * cause a leak.
 	 */
 	if (node->fullsort_state != NULL)
-	{
 		tuplesort_reset(node->fullsort_state);
-		node->fullsort_state = NULL;
-	}
 	if (node->prefixsort_state != NULL)
-	{
 		tuplesort_reset(node->prefixsort_state);
-		node->prefixsort_state = NULL;
-	}
 
 	/*
 	 * If chgParam of subnode is not null, then the plan will be re-scanned by
@@ -1260,4 +1278,24 @@ ExecIncrementalSortRetrieveInstrumentation(IncrementalSortState *node)
 	si = palloc(size);
 	memcpy(si, node->shared_info, size);
 	node->shared_info = si;
+
+	/*
+	 * GPDB: the workers' memory figures are not aggregated by the generic
+	 * instrumentation code, so fold them into this node's instrumentation.
+	 */
+	if (node->ss.ps.instrument != NULL)
+	{
+		for (int n = 0; n < si->num_workers; n++)
+		{
+			int64		used = Max(si->sinfo[n].fullsortGroupInfo.maxWorkmemUsed,
+								   si->sinfo[n].prefixsortGroupInfo.maxWorkmemUsed);
+			int64		wanted = Max(si->sinfo[n].fullsortGroupInfo.maxWorkmemWanted,
+									 si->sinfo[n].prefixsortGroupInfo.maxWorkmemWanted);
+
+			if (node->ss.ps.instrument->workmemused < used)
+				node->ss.ps.instrument->workmemused = used;
+			if (node->ss.ps.instrument->workmemwanted < wanted)
+				node->ss.ps.instrument->workmemwanted = wanted;
+		}
+	}
 }

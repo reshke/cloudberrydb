@@ -67,13 +67,13 @@ end';
 -- dropping it should still work
 drop extension test_ext8;
 
--- Test creation of extension in temporary schema with two-phase commit,
--- which should not work.  This function wrapper is useful for portability.
+-- Block creation of extension in temporary schema.  This function wrapper is
+-- useful for portability.
 
--- Avoid noise caused by CONTEXT and NOTICE messages including the temporary
+-- Avoid noise caused by CONTEXT and ERROR messages including the temporary
 -- schema name.
 \set SHOW_CONTEXT never
-SET client_min_messages TO 'warning';
+\set VERBOSITY sqlstate
 -- First enforce presence of temporary schema.
 CREATE TEMP TABLE test_ext4_tab ();
 CREATE OR REPLACE FUNCTION create_extension_with_temp_schema()
@@ -87,14 +87,13 @@ CREATE OR REPLACE FUNCTION create_extension_with_temp_schema()
     RAISE NOTICE 'query %', query;
     EXECUTE query;
   END; $$ LANGUAGE plpgsql;
-BEGIN;
 SELECT create_extension_with_temp_schema();
 PREPARE TRANSACTION 'twophase_extension';
 ROLLBACK;
 -- Clean up
 DROP TABLE test_ext4_tab;
 DROP FUNCTION create_extension_with_temp_schema();
-RESET client_min_messages;
+\set VERBOSITY default
 \unset SHOW_CONTEXT
 
 -- It's generally bad style to use CREATE OR REPLACE unnecessarily.
@@ -148,6 +147,38 @@ SELECT 'x'::test_ext_type;
 SELECT point(0,0) <<@@ polygon(circle(point(0,0),1));
 
 \dx+ test_ext_cor
+
+--
+-- $user as schema designation
+--
+
+CREATE ROLE regress_extowner SUPERUSER;
+SET ROLE regress_extowner;
+
+BEGIN;
+CREATE SCHEMA "$user";
+CREATE EXTENSION test_ext_cine SCHEMA "$user";  -- blocked
+ROLLBACK;
+
+BEGIN;
+CREATE SCHEMA regress_extowner;
+-- search_path="$user" works in the natural way.
+SET search_path = "$user";
+CREATE EXTENSION test_ext_cine;
+SELECT relnamespace::regnamespace FROM pg_class
+	WHERE relname = 'ext_cine_seq';
+-- For now, it's possible to get extnamespace='$user'::regnamespace via ALTER
+-- SCHEMA RENAME.  This does make ALTER EXTENSION UPDATE fail, for the
+-- affected extension and (not tested here) any extension depending on it.
+ALTER SCHEMA regress_extowner RENAME TO "$user";
+SELECT relnamespace::regnamespace FROM pg_class
+	WHERE relname = 'ext_cine_seq';
+ALTER EXTENSION test_ext_cine UPDATE TO '1.1';
+ROLLBACK;
+
+RESET ROLE;
+DROP OWNED BY regress_extowner;
+DROP ROLE regress_extowner;
 
 --
 -- CREATE IF NOT EXISTS is an entirely unsound thing for an extension
@@ -211,5 +242,79 @@ ALTER EXTENSION test_ext_cine UPDATE TO '1.1';
 -- Test @extschema@ syntax.
 --
 CREATE SCHEMA "has space";
+CREATE SCHEMA "has
+newline";
+CREATE SCHEMA "has@extschema@";
+CREATE SCHEMA "has--comment";
+CREATE SCHEMA "has/*comment";
+CREATE SCHEMA "has*/comment";
+CREATE SCHEMA "has@extowner@";
+CREATE SCHEMA "hasMODULE_PATHNAME";
 CREATE EXTENSION test_ext_extschema SCHEMA has$dollar;
+CREATE EXTENSION test_ext_extschema SCHEMA "has
+newline";
+CREATE EXTENSION test_ext_extschema SCHEMA "has@extschema@";
+CREATE EXTENSION test_ext_extschema SCHEMA "has--comment";
+CREATE EXTENSION test_ext_extschema SCHEMA "has/*comment";
+CREATE EXTENSION test_ext_extschema SCHEMA "has*/comment";
+CREATE EXTENSION test_ext_extschema SCHEMA "has@extowner@";
+CREATE EXTENSION test_ext_extschema SCHEMA "hasMODULE_PATHNAME";
 CREATE EXTENSION test_ext_extschema SCHEMA "has space";
+
+--
+-- Test extension with objects outside the extension's schema.
+--
+CREATE SCHEMA test_func_dep1;
+CREATE SCHEMA test_func_dep2;
+CREATE SCHEMA test_func_dep3;
+CREATE EXTENSION test_ext_req_schema1 SCHEMA test_func_dep1;
+ALTER FUNCTION test_func_dep1.dep_req1() SET SCHEMA test_func_dep2;
+SELECT pg_describe_object(classid, objid, objsubid) as obj,
+       pg_describe_object(refclassid, refobjid, refobjsubid) as objref,
+       deptype
+  FROM pg_depend
+  WHERE classid = 'pg_extension'::regclass AND
+        objid = (SELECT oid FROM pg_extension WHERE extname = 'test_ext_req_schema1')
+  ORDER BY 1, 2;
+-- fails, as function dep_req1 is not in the same schema as the extension.
+ALTER EXTENSION test_ext_req_schema1 SET SCHEMA test_func_dep3;
+-- Move back the function, and the extension can be moved.
+ALTER FUNCTION test_func_dep2.dep_req1() SET SCHEMA test_func_dep1;
+ALTER EXTENSION test_ext_req_schema1 SET SCHEMA test_func_dep3;
+SELECT pg_describe_object(classid, objid, objsubid) as obj,
+       pg_describe_object(refclassid, refobjid, refobjsubid) as objref,
+       deptype
+  FROM pg_depend
+  WHERE classid = 'pg_extension'::regclass AND
+        objid = (SELECT oid FROM pg_extension WHERE extname = 'test_ext_req_schema1')
+  ORDER BY 1, 2;
+DROP EXTENSION test_ext_req_schema1 CASCADE;
+DROP SCHEMA test_func_dep1;
+DROP SCHEMA test_func_dep2;
+DROP SCHEMA test_func_dep3;
+
+--
+-- Test @extschema:extname@ syntax and no_relocate option
+--
+CREATE EXTENSION test_ext_req_schema1 SCHEMA has$dollar;
+CREATE EXTENSION test_ext_req_schema3 CASCADE;
+DROP EXTENSION test_ext_req_schema1;
+CREATE SCHEMA test_s_dep;
+CREATE EXTENSION test_ext_req_schema1 SCHEMA test_s_dep;
+CREATE EXTENSION test_ext_req_schema3 CASCADE;
+SELECT test_s_dep.dep_req1();
+SELECT dep_req2();
+SELECT dep_req3();
+SELECT dep_req3b();
+CREATE SCHEMA test_s_dep2;
+ALTER EXTENSION test_ext_req_schema1 SET SCHEMA test_s_dep2;  -- fails
+ALTER EXTENSION test_ext_req_schema2 SET SCHEMA test_s_dep;  -- allowed
+SELECT test_s_dep.dep_req1();
+SELECT test_s_dep.dep_req2();
+SELECT dep_req3();
+SELECT dep_req3b();  -- fails
+DROP EXTENSION test_ext_req_schema3;
+ALTER EXTENSION test_ext_req_schema1 SET SCHEMA test_s_dep2;  -- now ok
+SELECT test_s_dep2.dep_req1();
+SELECT test_s_dep.dep_req2();
+DROP EXTENSION test_ext_req_schema1 CASCADE;

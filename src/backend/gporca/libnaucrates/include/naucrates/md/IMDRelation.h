@@ -75,7 +75,8 @@ public:
 	enum Erelpartitiontype
 	{
 		ErelpartitionRange = 'r',
-		ErelpartitionList = 'l'
+		ErelpartitionList = 'l',
+		ErelpartitionHash = 'h'
 	};
 
 protected:
@@ -203,6 +204,12 @@ public:
 
 	// rows
 	virtual CDouble Rows() const = 0;
+
+	// segment file count for AO/AOCO tables (returns -1 for non-AO tables)
+	virtual INT SegFileCount() const = 0;
+
+	// parallel workers setting from table options (returns -1 if not set)
+	virtual INT ParallelWorkers() const = 0;
 };
 
 // common structure over relation and external relation metadata for index info

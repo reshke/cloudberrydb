@@ -1,3 +1,7 @@
+-- start_matchsubs
+-- m/Seq Scan on recursive_table_ic \(actual rows=\d+ loops=\d+\)/
+-- s/Seq Scan on recursive_table_ic \(actual rows=\d+ loops=\d+\)/Seq Scan on recursive_table_ic (actual rows=XXXX loops=1)/
+-- end_matchsubs
 create schema gpexplain;
 set search_path = gpexplain;
 
@@ -36,6 +40,30 @@ declare
 begin
   for explainrow in execute 'EXPLAIN (ANALYZE, WAL) ' || explain_query
   loop
+    return next explainrow;
+  end loop;
+end;
+$$ language plpgsql;
+
+-- Run EXPLAIN ANALYZE BUFFERS, preserving the positions of buffer statistics
+create or replace function explain_buffers_filter(explain_query text) returns setof text as
+$$
+declare
+  explainrow text;
+begin
+  for explainrow in execute
+    'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || explain_query
+  loop
+    if explainrow ~ '^\s*Buffers:' then
+      explainrow := regexp_replace(explainrow, 'Buffers:.*$', 'Buffers: N');
+    else
+      explainrow := regexp_replace(explainrow,
+                                   '\m\d+([kK]B?)\M', 'N\1', 'g');
+      explainrow := regexp_replace(explainrow,
+                                   '\m\d+(x)', 'N\1', 'g');
+      explainrow := regexp_replace(explainrow,
+                                   '-?\m\d+\M', 'N', 'g');
+    end if;
     return next explainrow;
   end loop;
 end;
@@ -89,6 +117,14 @@ select
 CREATE TABLE explaintest (id int4);
 INSERT INTO explaintest SELECT generate_series(1, 10);
 ANALYZE explaintest;
+
+-- Compare normalized buffer placement
+-- explain_processing_off
+SELECT plan_line
+FROM explain_buffers_filter($$
+  SELECT * FROM explaintest;
+$$) WITH ORDINALITY AS plan(plan_line, line_number)
+ORDER BY line_number;
 
 EXPLAIN ANALYZE SELECT * FROM explaintest;
 
@@ -285,10 +321,6 @@ DROP USER regress_range_parted_user;
 -- Test if explain analyze will hang with materialize node
 CREATE TABLE recursive_table_ic (a INT) DISTRIBUTED BY (a);
 INSERT INTO recursive_table_ic SELECT * FROM generate_series(20, 30000);
--- start_matchsubs
--- m/Seq Scan on recursive_table_ic \(actual rows=\d+ loops=1\)/
--- s/Seq Scan on recursive_table_ic \(actual rows=\d+ loops=1\)/Seq Scan on recursive_table_ic (actual rows=#### loops=1)/
--- end_matchsubs
 explain (analyze, costs off, timing off, summary off) WITH RECURSIVE
 r(i) AS (
 	SELECT 1

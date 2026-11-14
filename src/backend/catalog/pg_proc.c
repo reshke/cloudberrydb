@@ -3,7 +3,7 @@
  * pg_proc.c
  *	  routines to support manipulation of the pg_proc relation
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -41,7 +41,9 @@
 #include "parser/analyze.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_type.h"
+#include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
+#include "storage/lmgr.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
@@ -388,7 +390,19 @@ ProcedureCreate(const char *procedureName,
 					(errcode(ERRCODE_DUPLICATE_FUNCTION),
 					 errmsg("function \"%s\" already exists with same argument types",
 							procedureName)));
-		if (!pg_proc_ownercheck(oldproc->oid, proowner))
+
+		/*
+		 * The row-locking on the pg_proc row is generally enough protection
+		 * from concurrently DROPping the function, but acquire a heavy-weight
+		 * lock on the function anyway, so that other DDL commands that depend
+		 * on the details of the function can prevent the function from being
+		 * concurrently modified.  And you get nicer error message on
+		 * conflicting ALTER FUNCTION commands than "row concurrently
+		 * updated".
+		 */
+		LockDatabaseObject(ProcedureRelationId, oldproc->oid, 0, AccessExclusiveLock);
+
+		if (!object_ownercheck(ProcedureRelationId, oldproc->oid, proowner))
 			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 						   procedureName);
 
@@ -533,10 +547,8 @@ ProcedureCreate(const char *procedureName,
 								 dropcmd,
 								 format_procedure(oldproc->oid))));
 
-			proargdefaults = SysCacheGetAttr(PROCNAMEARGSNSP, oldtup,
-											 Anum_pg_proc_proargdefaults,
-											 &isnull);
-			Assert(!isnull);
+			proargdefaults = SysCacheGetAttrNotNull(PROCNAMEARGSNSP, oldtup,
+													Anum_pg_proc_proargdefaults);
 			oldDefaults = castNode(List, stringToNode(TextDatumGetCString(proargdefaults)));
 			Assert(list_length(oldDefaults) == oldproc->pronargdefaults);
 
@@ -720,12 +732,18 @@ ProcedureCreate(const char *procedureName,
 
 	/* dependency on SQL routine body */
 	if (languageObjectId == SQLlanguageId && prosqlbody)
+	{
+		CheckUsageOnTypesInExpr(prosqlbody, NIL, GetUserId());
 		recordDependencyOnExpr(&myself, prosqlbody, NIL, DEPENDENCY_NORMAL);
+	}
 
 	/* dependency on parameter default expressions */
 	if (parameterDefaults)
+	{
+		CheckUsageOnTypesInExpr((Node *) parameterDefaults, NIL, GetUserId());
 		recordDependencyOnExpr(&myself, (Node *) parameterDefaults,
 							   NIL, DEPENDENCY_NORMAL);
+	}
 
 	/* dependency on owner */
 	if (!is_update)
@@ -784,6 +802,10 @@ ProcedureCreate(const char *procedureName,
 			AtEOXact_GUC(true, save_nestlevel);
 	}
 
+	/* ensure that stats are dropped if transaction aborts */
+	if (!is_update)
+		pgstat_create_function(retval);
+
 	return myself;
 }
 
@@ -800,7 +822,6 @@ fmgr_internal_validator(PG_FUNCTION_ARGS)
 {
 	Oid			funcoid = PG_GETARG_OID(0);
 	HeapTuple	tuple;
-	bool		isnull;
 	Datum		tmp;
 	char	   *prosrc;
 
@@ -816,9 +837,7 @@ fmgr_internal_validator(PG_FUNCTION_ARGS)
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for function %u", funcoid);
 
-	tmp = SysCacheGetAttr(PROCOID, tuple, Anum_pg_proc_prosrc, &isnull);
-	if (isnull)
-		elog(ERROR, "null prosrc");
+	tmp = SysCacheGetAttrNotNull(PROCOID, tuple, Anum_pg_proc_prosrc);
 	prosrc = TextDatumGetCString(tmp);
 
 	if (fmgr_internal_function(prosrc) == InvalidOid)
@@ -847,7 +866,6 @@ fmgr_c_validator(PG_FUNCTION_ARGS)
 	Oid			funcoid = PG_GETARG_OID(0);
 	void	   *libraryhandle;
 	HeapTuple	tuple;
-	bool		isnull;
 	Datum		tmp;
 	char	   *prosrc;
 	char	   *probin;
@@ -865,14 +883,10 @@ fmgr_c_validator(PG_FUNCTION_ARGS)
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for function %u", funcoid);
 
-	tmp = SysCacheGetAttr(PROCOID, tuple, Anum_pg_proc_prosrc, &isnull);
-	if (isnull)
-		elog(ERROR, "null prosrc for C function %u", funcoid);
+	tmp = SysCacheGetAttrNotNull(PROCOID, tuple, Anum_pg_proc_prosrc);
 	prosrc = TextDatumGetCString(tmp);
 
-	tmp = SysCacheGetAttr(PROCOID, tuple, Anum_pg_proc_probin, &isnull);
-	if (isnull)
-		elog(ERROR, "null probin for C function %u", funcoid);
+	tmp = SysCacheGetAttrNotNull(PROCOID, tuple, Anum_pg_proc_probin);
 	probin = TextDatumGetCString(tmp);
 
 	(void) load_external_function(probin, prosrc, true, &libraryhandle);
@@ -904,6 +918,10 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 	parse_error_callback_arg callback_arg;
 	ErrorContextCallback sqlerrcontext;
 	bool		haspolyarg;
+	Oid		   *argtypes;
+	char	  **argnames;
+	char	   *argmodes;
+	int			numargs;
 	int			i;
 
 	if (!CheckFunctionValidatorAccess(fcinfo->flinfo->fn_oid, funcoid))
@@ -925,30 +943,37 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 				 errmsg("SQL functions cannot return type %s",
 						format_type_be(proc->prorettype))));
 
-	/* Disallow pseudotypes in arguments */
-	/* except for polymorphic */
+	/* Disallow pseudotypes in arguments (either IN or OUT) */
+	/* except for polymorphic, or RECORD/RECORD[] as an output column type */
 	haspolyarg = false;
-	for (i = 0; i < proc->pronargs; i++)
+	numargs = get_func_arg_info(tuple, &argtypes, &argnames, &argmodes);
+	for (i = 0; i < numargs; i++)
 	{
-		if (get_typtype(proc->proargtypes.values[i]) == TYPTYPE_PSEUDO)
+		char		argmode = argmodes ? argmodes[i] : PROARGMODE_IN;
+
+		if (get_typtype(argtypes[i]) != TYPTYPE_PSEUDO)
+			continue;
+
+		if (IsPolymorphicType(argtypes[i]))
 		{
-			if (IsPolymorphicType(proc->proargtypes.values[i]))
-				haspolyarg = true;
-			else
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
-						 errmsg("SQL functions cannot have arguments of type %s",
-								format_type_be(proc->proargtypes.values[i]))));
+			haspolyarg = true;
+			continue;
 		}
+
+		if ((argtypes[i] == RECORDOID || argtypes[i] == RECORDARRAYOID) &&
+			(argmode == PROARGMODE_OUT || argmode == PROARGMODE_TABLE))
+			continue;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
+				 errmsg("SQL functions cannot have arguments of type %s",
+						format_type_be(argtypes[i]))));
 	}
 
 	/* Postpone body checks if !check_function_bodies */
 	if (check_function_bodies)
 	{
-		tmp = SysCacheGetAttr(PROCOID, tuple, Anum_pg_proc_prosrc, &isnull);
-		if (isnull)
-			elog(ERROR, "null prosrc");
-
+		tmp = SysCacheGetAttrNotNull(PROCOID, tuple, Anum_pg_proc_prosrc);
 		prosrc = TextDatumGetCString(tmp);
 
 		/*
@@ -1022,7 +1047,7 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 					RawStmt    *parsetree = lfirst_node(RawStmt, lc);
 					List	   *querytree_sublist;
 
-					querytree_sublist = pg_analyze_and_rewrite_params(parsetree,
+					querytree_sublist = pg_analyze_and_rewrite_withcb(parsetree,
 																	  prosrc,
 																	  (ParserSetupHook) sql_fn_parser_setup,
 																	  pinfo,
@@ -1042,9 +1067,10 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 
 			(void) get_func_result_type(funcoid, &rettype, &rettupdesc);
 
-			(void) check_sql_fn_retval(querytree_list,
-									   rettype, rettupdesc,
-									   false, NULL);
+			(void) check_sql_fn_retval_ext(querytree_list,
+										   rettype, rettupdesc,
+										   proc->prokind,
+										   false, NULL);
 		}
 
 		error_context_stack = sqlerrcontext.previous;
@@ -1234,7 +1260,7 @@ match_prosrc_to_literal(const char *prosrc, const char *literal,
 			if (cursorpos > 0)
 				newcp++;
 		}
-		chlen = pg_mblen(prosrc);
+		chlen = pg_mblen_cstr(prosrc);
 		if (strncmp(prosrc, literal, chlen) != 0)
 			goto fail;
 		prosrc += chlen;
@@ -1263,10 +1289,7 @@ oid_array_to_list(Datum datum)
 	int			i;
 	List	   *result = NIL;
 
-	deconstruct_array(array,
-					  OIDOID,
-					  sizeof(Oid), true, TYPALIGN_INT,
-					  &values, NULL, &nelems);
+	deconstruct_array_builtin(array, OIDOID, &values, NULL, &nelems);
 	for (i = 0; i < nelems; i++)
 		result = lappend_oid(result, values[i]);
 	return result;

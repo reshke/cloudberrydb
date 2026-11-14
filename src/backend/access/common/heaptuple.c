@@ -47,7 +47,7 @@
  *
  * Portions Copyright (c) 2006-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -62,20 +62,85 @@
 #include "access/heaptoast.h"
 #include "access/sysattr.h"
 #include "access/tupdesc_details.h"
+#include "common/hashfn.h"
 #include "executor/tuptable.h"
 #include "foreign/foreign.h"
+#include "common/int.h"
+#include "utils/datum.h"
 #include "utils/expandeddatum.h"
+#include "utils/hsearch.h"
+#include "utils/memutils.h"
 
 #include "catalog/pg_type.h"
 #include "cdb/cdbvars.h"                /* GpIdentity.segindex */
 
-/* Does att's datatype allow packing into the 1-byte-header varlena format? */
+/*
+ * Does att's datatype allow packing into the 1-byte-header varlena format?
+ * While functions that use TupleDescAttr() and assign attstorage =
+ * TYPSTORAGE_PLAIN cannot use packed varlena headers, functions that call
+ * TupleDescInitEntry() use typeForm->typstorage (TYPSTORAGE_EXTENDED) and
+ * can use packed varlena headers, e.g.:
+ *     CREATE TABLE test(a VARCHAR(10000) STORAGE PLAIN);
+ *     INSERT INTO test VALUES (repeat('A',10));
+ * This can be verified with pageinspect.
+ */
 #define ATT_IS_PACKABLE(att) \
 	((att)->attlen == -1 && (att)->attstorage != TYPSTORAGE_PLAIN)
 /* Use this if it's already known varlena */
 #define VARLENA_ATT_IS_PACKABLE(att) \
 	((att)->attstorage != TYPSTORAGE_PLAIN)
 
+/*
+ * Setup for cacheing pass-by-ref missing attributes in a way that survives
+ * tupleDesc destruction.
+ */
+
+typedef struct
+{
+	int			len;
+	Datum		value;
+} missing_cache_key;
+
+static HTAB *missing_cache = NULL;
+
+static uint32
+missing_hash(const void *key, Size keysize)
+{
+	const missing_cache_key *entry = (missing_cache_key *) key;
+
+	return hash_bytes((const unsigned char *) entry->value, entry->len);
+}
+
+static int
+missing_match(const void *key1, const void *key2, Size keysize)
+{
+	const missing_cache_key *entry1 = (missing_cache_key *) key1;
+	const missing_cache_key *entry2 = (missing_cache_key *) key2;
+
+	if (entry1->len != entry2->len)
+		return entry1->len > entry2->len ? 1 : -1;
+
+	return memcmp(DatumGetPointer(entry1->value),
+				  DatumGetPointer(entry2->value),
+				  entry1->len);
+}
+
+static void
+init_missing_cache()
+{
+	HASHCTL		hash_ctl;
+
+	hash_ctl.keysize = sizeof(missing_cache_key);
+	hash_ctl.entrysize = sizeof(missing_cache_key);
+	hash_ctl.hcxt = TopMemoryContext;
+	hash_ctl.hash = missing_hash;
+	hash_ctl.match = missing_match;
+	missing_cache =
+		hash_create("Missing Values Cache",
+					32,
+					&hash_ctl,
+					HASH_ELEM | HASH_CONTEXT | HASH_FUNCTION | HASH_COMPARE);
+}
 
 /* ----------------------------------------------------------------
  *						misc support routines
@@ -107,8 +172,41 @@ getmissingattr(TupleDesc tupleDesc,
 
 		if (attrmiss->am_present)
 		{
+			missing_cache_key key;
+			missing_cache_key *entry;
+			bool		found;
+			MemoryContext oldctx;
+
 			*isnull = false;
-			return attrmiss->am_value;
+
+			/* no  need to cache by-value attributes */
+			if (att->attbyval)
+				return attrmiss->am_value;
+
+			/* set up cache if required */
+			if (missing_cache == NULL)
+				init_missing_cache();
+
+			/* check if there's a cache entry */
+			Assert(att->attlen > 0 || att->attlen == -1);
+			if (att->attlen > 0)
+				key.len = att->attlen;
+			else
+				key.len = VARSIZE_ANY(attrmiss->am_value);
+			key.value = attrmiss->am_value;
+
+			entry = hash_search(missing_cache, &key, HASH_ENTER, &found);
+
+			if (!found)
+			{
+				/* cache miss, so we need a non-transient copy of the datum */
+				oldctx = MemoryContextSwitchTo(TopMemoryContext);
+				entry->value =
+					datumCopy(attrmiss->am_value, false, att->attlen);
+				MemoryContextSwitchTo(oldctx);
+			}
+
+			return entry->value;
 		}
 	}
 
@@ -125,14 +223,32 @@ heap_compute_data_size(TupleDesc tupleDesc,
 					   Datum *values,
 					   bool *isnull)
 {
+	return heap_compute_data_size_ext(tupleDesc, values, isnull, false);
+}
+
+/*
+ * heap_compute_data_size_ext
+ *		Determine size of the data area of a tuple to be constructed,
+ *		potentially over MaxAllocSize
+ *
+ * If allow_huge is false, then we raise an error if any intermediate
+ * result goes beyond MaxAllocSize; in 32-bit architectures we also
+ * do that when the result of an addition overflows Size (which is 32-bit)
+ */
+Size
+heap_compute_data_size_ext(TupleDesc tupleDesc,
+						   const Datum *values,
+						   const bool *isnull,
+						   bool allow_huge)
+{
 	Size		data_length = 0;
-	int			i;
 	int			numberOfAttributes = tupleDesc->natts;
 
-	for (i = 0; i < numberOfAttributes; i++)
+	for (int i = 0; i < numberOfAttributes; i++)
 	{
 		Datum		val;
 		Form_pg_attribute atti;
+		bool		ovfl;
 
 		if (isnull[i])
 			continue;
@@ -147,7 +263,9 @@ heap_compute_data_size(TupleDesc tupleDesc,
 			 * we're anticipating converting to a short varlena header, so
 			 * adjust length and don't count any alignment
 			 */
-			data_length += VARATT_CONVERTED_SHORT_SIZE(DatumGetPointer(val));
+			ovfl = pg_add_size_overflow(data_length,
+										VARATT_CONVERTED_SHORT_SIZE(DatumGetPointer(val)),
+										&data_length);
 		}
 		else if (atti->attlen == -1 &&
 				 VARATT_IS_EXTERNAL_EXPANDED(DatumGetPointer(val)))
@@ -157,15 +275,28 @@ heap_compute_data_size(TupleDesc tupleDesc,
 			 * tuple doesn't depend on it
 			 */
 			data_length = att_align_nominal(data_length, atti->attalign);
-			data_length += EOH_get_flat_size(DatumGetEOHP(val));
+			ovfl = pg_add_size_overflow(data_length,
+										EOH_get_flat_size(DatumGetEOHP(val)),
+										&data_length);
 		}
 		else
 		{
 			data_length = att_align_datum(data_length, atti->attalign,
 										  atti->attlen, val);
-			data_length = att_addlength_datum(data_length, atti->attlen,
-											  val);
+			data_length = att_addlength_datum_overflow(data_length, atti->attlen,
+													   val, &ovfl);
 		}
+
+		/*
+		 * Unless caller allows huge values, prevent going beyond the palloc
+		 * limit.  In cases where caller does allow huge values, we can't
+		 * trust the AllocSizeIsValid() test alone on 32-bit platforms, which
+		 * is why we use overflow-detecting addition above.
+		 */
+		if (ovfl || (!allow_huge && !AllocSizeIsValid(data_length)))
+			ereport(ERROR,
+					errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					errmsg("tuple is too big"));
 	}
 
 	return data_length;
@@ -309,7 +440,7 @@ fill_val(Form_pg_attribute att,
  * @param isnull will only be used if <code>bit</code> is non-NULL
  * @param bit should be non-NULL (refer to td->t_bits) if isnull is set and contains non-null values
  */
-Size
+void
 heap_fill_tuple(TupleDesc tupleDesc,
 				Datum *values, bool *isnull,
 				char *data, Size data_size,
@@ -352,9 +483,8 @@ heap_fill_tuple(TupleDesc tupleDesc,
 	}
 
 	Assert((data - start) == data_size);
-
-	return data_size;
 }
+
 
 /* ----------------------------------------------------------------
  *						heap tuple interface
@@ -432,15 +562,21 @@ heap_attisnull(HeapTuple tup, int attnum, TupleDesc tupleDesc)
  * ----------------
  */
 Datum
-nocachegetattr(HeapTuple tuple,
+nocachegetattr(HeapTuple tup,
 			   int attnum,
 			   TupleDesc tupleDesc)
 {
-	HeapTupleHeader tup = tuple->t_data;
+	HeapTupleHeader td = tup->t_data;
 	char	   *tp;				/* ptr to data part of tuple */
-	bits8	   *bp = tup->t_bits;	/* ptr to null bitmap in tuple */
+	bits8	   *bp = td->t_bits;	/* ptr to null bitmap in tuple */
 	bool		slow = false;	/* do we have to walk attrs? */
-	int			off;			/* current offset within data */
+	Size		off;			/* current offset within data */
+
+	/*
+	 * It shouldn't be possible to allocate overlength tuples, so it's not
+	 * possible to get in wraparound problems in the arithmetic below.
+	 */
+	Assert(AllocSizeIsValid(tup->t_len));
 
 	/* ----------------
 	 *	 Three cases:
@@ -453,7 +589,7 @@ nocachegetattr(HeapTuple tuple,
 
 	attnum--;
 
-	if (!HeapTupleNoNulls(tuple))
+	if (!HeapTupleNoNulls(tup))
 	{
 		/*
 		 * there's a null somewhere in the tuple
@@ -482,7 +618,7 @@ nocachegetattr(HeapTuple tuple,
 		}
 	}
 
-	tp = (char *) tup + tup->t_hoff;
+	tp = (char *) td + td->t_hoff;
 
 	if (!slow)
 	{
@@ -501,7 +637,7 @@ nocachegetattr(HeapTuple tuple,
 		 * target.  If there aren't any, it's safe to cheaply initialize the
 		 * cached offsets for these attrs.
 		 */
-		if (HeapTupleHasVarWidth(tuple))
+		if (HeapTupleHasVarWidth(tup))
 		{
 			int			j;
 
@@ -577,7 +713,7 @@ nocachegetattr(HeapTuple tuple,
 		{
 			Form_pg_attribute att = TupleDescAttr(tupleDesc, i);
 
-			if (HeapTupleHasNulls(tuple) && att_isnull(i, bp))
+			if (HeapTupleHasNulls(tup) && att_isnull(i, bp))
 			{
 				usecache = false;
 				continue;		/* this cannot be the target att */
@@ -839,6 +975,11 @@ expand_tuple(HeapTuple *targetHeapTuple,
 				targetDataLen = att_addlength_pointer(targetDataLen,
 													  att->attlen,
 													  attrmiss[attnum].am_value);
+
+				if (!AllocSizeIsValid(targetDataLen))
+					ereport(ERROR,
+							errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							errmsg("tuple is too big"));
 			}
 			else
 			{

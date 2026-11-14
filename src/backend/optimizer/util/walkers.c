@@ -8,11 +8,17 @@
 
 #include "postgres.h"
 
+#include "access/htup_details.h"
+#include "catalog/pg_amop.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/walkers.h"
+#include "utils/catcache.h"
+#include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 /**
  * Plan node walker related methods.
@@ -30,8 +36,8 @@ void exec_init_plan_tree_base(plan_tree_base_prefix *base, PlannedStmt *stmt)
 	base->node = (Node*)stmt;
 }
 
-static bool walk_scan_node_fields(Scan *scan, bool (*walker) (), void *context);
-static bool walk_join_node_fields(Join *join, bool (*walker) (), void *context);
+static bool walk_scan_node_fields(Scan *scan, bool (*walker) (Node *, void *), void *context);
+static bool walk_join_node_fields(Join *join, bool (*walker) (Node *, void *), void *context);
 
 
 /* ----------------------------------------------------------------------- *
@@ -51,7 +57,7 @@ static bool walk_join_node_fields(Join *join, bool (*walker) (), void *context);
  */
 bool
 walk_plan_node_fields(Plan *plan,
-					  bool (*walker) (),
+					  bool (*walker) (Node *, void *),
 					  void *context)
 {
 	/* target list to be computed at this node */
@@ -95,7 +101,7 @@ walk_plan_node_fields(Plan *plan,
  */
 bool
 walk_scan_node_fields(Scan *scan,
-					  bool (*walker) (),
+					  bool (*walker) (Node *, void *),
 					  void *context)
 {
 	/* A Scan node is a kind of Plan node. */
@@ -120,7 +126,7 @@ walk_scan_node_fields(Scan *scan,
  */
 bool
 walk_join_node_fields(Join *join,
-					  bool (*walker) (),
+					  bool (*walker) (Node *, void *),
 					  void *context)
 {
 	/* A Join node is a kind of Plan node. */
@@ -143,7 +149,7 @@ walk_join_node_fields(Join *join,
  */
 bool
 plan_tree_walker(Node *node,
-				 bool (*walker) (),
+				 bool (*walker) (Node *, void *),
 				 void *context,
 				 bool recurse_into_subplans)
 {
@@ -246,18 +252,18 @@ plan_tree_walker(Node *node,
 		case T_DynamicForeignScan:
 			if (walk_scan_node_fields((Scan *) node, walker, context))
 				return true;
-			if (walker(((ForeignScan *) node)->fdw_exprs, context))
+			if (walker((Node *) ((ForeignScan *) node)->fdw_exprs, context))
 				return true;
 			break;
 
 		case T_CustomScan:
 			if (walk_scan_node_fields((Scan *) node, walker, context))
 				return true;
-			if (walker(((CustomScan *) node)->custom_plans, context))
-				return true;
-			if (walker(((CustomScan *) node)->custom_exprs, context))
-				return true;
-			if (walker(((CustomScan *) node)->custom_scan_tlist, context))
+		if (walker((Node *) ((CustomScan *) node)->custom_plans, context))
+			return true;
+		if (walker((Node *) ((CustomScan *) node)->custom_exprs, context))
+			return true;
+		if (walker((Node *) ((CustomScan *) node)->custom_scan_tlist, context))
 				return true;
 			break;
 
@@ -390,7 +396,7 @@ plan_tree_walker(Node *node,
 			break;
 
 		case T_DQAExpr:
-			if (walker(((DQAExpr *)node)->agg_filter, context))
+			if (walker((Node *) ((DQAExpr *)node)->agg_filter, context))
 				return true;
 			/* Other fields are simple items and lists of simple items. */
 			break;
@@ -537,6 +543,8 @@ plan_tree_walker(Node *node,
 				return true;
 			if (walker((Node *) ((ModifyTable *) node)->returningLists, context))
 				return true;
+			if (walker((Node *) ((ModifyTable *) node)->mergeActionLists, context))
+				return true;
 
 			break;
 
@@ -546,6 +554,7 @@ plan_tree_walker(Node *node,
 			break;
 
 		case T_SplitUpdate:
+		case T_SplitMerge:
 		case T_AssertOp:
 			if (walk_plan_node_fields((Plan *) node, walker, context))
 				return true;
@@ -702,6 +711,11 @@ List *extract_nodes_plan(Plan *pl, int nodeTag, bool descendIntoSubqueries)
 }
 
 static bool
+extract_nodes_walker(Node *node, extract_context *context);
+static bool
+extract_nodes_walker_adapter(Node *node, void *context);
+
+static bool
 extract_nodes_walker(Node *node, extract_context *context)
 {
 	if (node == NULL)
@@ -749,9 +763,15 @@ extract_nodes_walker(Node *node, extract_context *context)
 		return false;
 	}
 
-	return plan_tree_walker(node, extract_nodes_walker,
+	return plan_tree_walker(node, extract_nodes_walker_adapter,
 							(void *) context,
 							true);
+}
+
+static bool
+extract_nodes_walker_adapter(Node *node, void *context)
+{
+	return extract_nodes_walker(node, (extract_context *) context);
 }
 
 /**
@@ -1009,5 +1029,111 @@ check_collation_walker(Node *node, check_collation_context *context)
 	{
 		return expression_tree_walker(node, check_collation_walker, (void *) context);
 	}
+}
+
+/*
+ * is_ordering_op
+ *
+ * Return true if the operator is registered as an ordering operator
+ * (amoppurpose = AMOP_ORDER) in any opfamily in pg_amop.
+ */
+static bool
+is_ordering_op(Oid opno)
+{
+	CatCList   *catlist = SearchSysCacheList1(AMOPOPID,
+											  ObjectIdGetDatum(opno));
+
+	for (int i = 0; i < catlist->n_members; i++)
+	{
+		HeapTuple	tp = &catlist->members[i]->tuple;
+		Form_pg_amop amop = (Form_pg_amop) GETSTRUCT(tp);
+
+		if (amop->amoppurpose == AMOP_ORDER)
+		{
+			ReleaseSysCacheList(catlist);
+			return true;
+		}
+	}
+	ReleaseSysCacheList(catlist);
+	return false;
+}
+
+/*
+ * has_plain_var_arg
+ *
+ * Return true if the OpExpr has at least one direct Var argument
+ * (not wrapped in a function or other expression).
+ *
+ * Implicit coercions such as RelabelType (binary-compatible casts, e.g.
+ * varchar -> text) are stripped before the check so that a column
+ * reference that was implicitly cast to match the operator's input type
+ * is still recognised as a plain Var.
+ */
+static bool
+has_plain_var_arg(OpExpr *op)
+{
+	ListCell   *arg_lc;
+
+	foreach(arg_lc, op->args)
+	{
+		Node	   *arg = strip_implicit_coercions(lfirst(arg_lc));
+
+		if (IsA(arg, Var))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * has_orderby_ordering_op
+ *
+ * Check if the query's ORDER BY uses ordering operators (amoppurpose =
+ * AMOP_ORDER in pg_amop) that the PostgreSQL planner can safely optimize
+ * with KNN-GiST index scans but ORCA cannot.
+ *
+ * Return true only when ALL ordering-operator expressions in ORDER BY
+ * have at least one direct Var (column reference) argument.  Expressions
+ * like "circle(p,1) <-> point(0,0)" wrap the column in a function,
+ * which can cause "lossy distance functions are not supported in
+ * index-only scans" errors in the planner.  In such cases we leave the
+ * query for ORCA to handle via Seq Scan + Sort.
+ */
+bool
+has_orderby_ordering_op(Query *query)
+{
+	ListCell   *lc;
+	bool		found_ordering_op = false;
+
+	if (query->sortClause == NIL)
+		return false;
+
+	foreach(lc, query->sortClause)
+	{
+		SortGroupClause *sgc = (SortGroupClause *) lfirst(lc);
+		TargetEntry *tle = get_sortgroupclause_tle(sgc, query->targetList);
+		Node	   *expr = (Node *) tle->expr;
+
+		if (!IsA(expr, OpExpr))
+			continue;
+
+		OpExpr	   *opexpr = (OpExpr *) expr;
+
+		if (!is_ordering_op(opexpr->opno))
+			continue;
+
+		/*
+		 * Found an ordering operator.  Check that at least one argument is
+		 * a plain Var.  If any ordering operator has only computed arguments
+		 * (e.g., function calls wrapping columns), bail out immediately —
+		 * falling back to the planner could produce lossy distance errors
+		 * in index-only scans.
+		 */
+		found_ordering_op = true;
+
+		if (!has_plain_var_arg(opexpr))
+			return false;
+	}
+
+	return found_ordering_op;
 }
 

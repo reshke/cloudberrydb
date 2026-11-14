@@ -3,7 +3,7 @@
  * pg_type.c
  *	  routines to support manipulation of the pg_type relation
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -348,6 +348,9 @@ TypeShellMake(const char *typeName, Oid typeNamespace, Oid ownerId)
  *		Returns the ObjectAddress assigned to the new type.
  *		If newTypeOid is zero (the normal case), a new OID is created;
  *		otherwise we use exactly that OID.
+ *
+ *		NB: Caller is responsible for ensuring the user has USAGE
+ *		on all types defaultTypeBin depends on.
  * ----------------------------------------------------------------
  */
 ObjectAddress
@@ -685,12 +688,23 @@ TypeCreate(Oid newTypeOid,
  * isDependentType is true if this is an implicit array or relation rowtype;
  * that means it doesn't need its own dependencies on owner etc.
  *
- * If rebuild is true, we remove existing dependencies and rebuild them
- * from scratch.  This is needed for ALTER TYPE, and also when replacing
- * a shell type.  We don't remove an existing extension dependency, though.
- * That means an extension can't absorb a shell type that is free-standing
- * or belongs to another extension, nor ALTER a type that is free-standing or
- * belongs to another extension.
+ * We make an extension-membership dependency if we're in an extension
+ * script and makeExtensionDep is true (and isDependentType isn't true).
+ * makeExtensionDep should be true when creating a new type or replacing a
+ * shell type, but not for ALTER TYPE on an existing type.  Passing false
+ * causes the type's extension membership to be left alone.
+ *
+ * rebuild should be true if this is a pre-existing type.  We will remove
+ * existing dependencies and rebuild them from scratch.  This is needed for
+ * ALTER TYPE, and also when replacing a shell type.  We don't remove any
+ * existing extension dependency, though; hence, if makeExtensionDep is also
+ * true and we're in an extension script, an error will occur unless the
+ * type already belongs to the current extension.  That's the behavior we
+ * want when replacing a shell type, which is the only case where both flags
+ * are true.
+ *
+ * NB: Caller is responsible for ensuring the user has USAGE on all types
+ * defaultExpr depends on.
  */
 void
 GenerateTypeDependencies(HeapTuple typeTuple,
@@ -1066,7 +1080,7 @@ char *
 makeMultirangeTypeName(const char *rangeTypeName, Oid typeNamespace)
 {
 	char	   *buf;
-	char	   *rangestr;
+	const char	   *rangestr;
 
 	/*
 	 * If the range type name contains "range" then change that to

@@ -3,7 +3,7 @@
  * tsrank.c
  *		rank tsvector by tsquery
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -176,7 +176,7 @@ SortAndUniqItems(TSQuery q, int *size)
 	if (*size < 2)
 		return res;
 
-	qsort_arg(res, *size, sizeof(QueryOperand *), compareQueryOperand, (void *) operand);
+	qsort_arg(res, *size, sizeof(QueryOperand *), compareQueryOperand, operand);
 
 	ptr = res + 1;
 	prevptr = res;
@@ -257,7 +257,7 @@ calc_rank_and(const float *w, TSVector t, TSQuery q)
 				{
 					for (p = 0; p < lenct; p++)
 					{
-						dist = Abs((int) WEP_GETPOS(post[l]) - (int) WEP_GETPOS(ct[p]));
+						dist = abs((int) WEP_GETPOS(post[l]) - (int) WEP_GETPOS(ct[p]));
 						if (dist || (dist == 0 && (pos[i] == POSNULL || pos[k] == POSNULL)))
 						{
 							float		curw;
@@ -337,7 +337,7 @@ calc_rank_or(const float *w, TSVector t, TSQuery q)
 			}
 /*
 			limit (sum(1/i^2),i=1,inf) = pi^2/6
-			resj = sum(wi/i^2),i=1,noccurence,
+			resj = sum(wi/i^2),i=1,noccurrence,
 			wi - should be sorted desc,
 			don't sort for now, just choose maximum weight. This should be corrected
 			Oleg Bartunov
@@ -804,7 +804,7 @@ get_docrep(TSVector txt, QueryRepresentation *qr, int *doclen)
 		/*
 		 * Sort representation in ascending order by pos and entry
 		 */
-		qsort((void *) doc, cur, sizeof(DocRepresentation), compareDocR);
+		qsort(doc, cur, sizeof(DocRepresentation), compareDocR);
 
 		/*
 		 * Join QueryItem per WordEntry and it's position
@@ -819,8 +819,18 @@ get_docrep(TSVector txt, QueryRepresentation *qr, int *doclen)
 			if (rptr->pos == (rptr - 1)->pos &&
 				rptr->data.map.entry == (rptr - 1)->data.map.entry)
 			{
-				storage.data.query.items[storage.data.query.nitem] = rptr->data.map.item;
-				storage.data.query.nitem++;
+				/*
+				 * A valid tsvector never lists the same position twice for a
+				 * lexeme, so a group can't have more than one item per query
+				 * operand.  But with corrupt data we might see too many
+				 * entries; if so, drop entries rather than overrunning
+				 * items[].
+				 */
+				if (storage.data.query.nitem < qr->query->size)
+				{
+					storage.data.query.items[storage.data.query.nitem] = rptr->data.map.item;
+					storage.data.query.nitem++;
+				}
 			}
 			else
 			{

@@ -72,8 +72,22 @@ github:
     # Enable rebase merging for linear history
     rebase: true
 
-  # Branch protection rules for the main branch
+  # Repository collaborators (triage access)
+  #
+  # Non-committer contributors listed here get triage permission, which
+  # lets GitHub Actions run automatically on their pull requests without
+  # waiting for a committer's manual approval.  This speeds up the
+  # feedback loop for people who contribute regularly.
+  collaborators:
+    - Alena0704
+    - andr-sokolov
+    - Vlasdislav
+    - fairyfar
+    - MutableFire
+
+  # Branch protection rules
   protected_branches:
+    # Branch protection for the main branch
     main:
       # Require status checks to pass before merging
       required_status_checks:
@@ -134,9 +148,29 @@ github:
       # Require conversation threads to be resolved
       required_conversation_resolution: true
 
-  # Branch cleanup settings
-  # Don't automatically delete branches after merging
-  del_branch_on_merge: true
+    # Branch protection for the branches that we keep for reference only.
+    # An empty rule adds no review or status check requirements, but it
+    # stops force pushes to the branch and the deletion of the branch.
+
+    # Release branch of the 1.x series (before the project joined the ASF)
+    REL_1_STABLE: {}
+
+    # Archive of the main branch (PostgreSQL 14 kernel) before the
+    # PostgreSQL 16 merge
+    PG14_ARCHIVE: {}
+
+  # Pull request settings
+  pull_requests:
+    # Allow a PR to be merged automatically once all required reviews
+    # and status checks pass.  Committers should only enable it on a PR
+    # whose commit history is already in a mergeable shape; PRs that
+    # need squashing or history cleanup are still merged by hand.
+    allow_auto_merge: true
+    # Show the "Update branch" button, since main requires branches to
+    # be up to date before merging (strict status checks)
+    allow_update_branch: true
+    # Automatically delete head branches after merging
+    del_branch_on_merge: true
 
   # Dependabot security settings
   # Enable security vulnerability alerts

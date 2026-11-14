@@ -96,6 +96,7 @@ enum Edxltoken
 	EdxltokenPhysical,
 
 	EdxltokenPhysicalTableScan,
+	EdxltokenPhysicalParallelTableScan,
 	EdxltokenPhysicalBitmapTableScan,
 	EdxltokenPhysicalDynamicBitmapTableScan,
 	EdxltokenPhysicalForeignScan,
@@ -115,6 +116,7 @@ enum Edxltoken
 	EdxltokenPhysicalResult,
 	EdxltokenPhysicalAggregate,
 	EdxltokenPhysicalAppend,
+	EdxltokenPhysicalParallelAppend,
 	EdxltokenPhysicalMaterialize,
 	EdxltokenPhysicalDynamicForeignScan,
 	EdxltokenPhysicalSequence,
@@ -320,6 +322,7 @@ enum Edxltoken
 	EdxltokenAggrefOid,
 	EdxltokenAggrefDistinct,
 	EdxltokenAggrefIsAggStar,
+	EdxltokenAggrefIsPresorted,
 	EdxltokenAggrefArgTypes,
 	EdxltokenAggrefKind,
 	EdxltokenAggrefStage,
@@ -374,6 +377,7 @@ enum Edxltoken
 	EdxltokenColNdvBySeg,
 
 	EdxltokenParamId,
+	EdxltokenParallelWorkers,
 
 	EdxltokenCtidColName,
 	EdxltokenOidColName,
@@ -665,6 +669,8 @@ enum Edxltoken
 	EdxltokenGPDBAggIntermediateResultTypeId,
 	EdxltokenGPDBAggSplittable,
 	EdxltokenGPDBAggHashAggCapable,
+	EdxltokenGPDBAggFinalFuncVolatile,
+	EdxltokenGPDBAggOrderInsensitive,
 
 	EdxltokenEntireRow,
 

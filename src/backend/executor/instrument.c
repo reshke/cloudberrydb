@@ -6,7 +6,7 @@
  *
  * Portions Copyright (c) 2006-2009, Greenplum inc
  * Portions Copyright (c) 2012-Present VMware, Inc. or its affiliates.
- * Copyright (c) 2001-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2023, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/executor/instrument.c
@@ -32,7 +32,6 @@ static BufferUsage save_pgBufferUsage;
 WalUsage	pgWalUsage;
 static WalUsage save_pgWalUsage;
 
-static void BufferUsageAdd(BufferUsage *dst, const BufferUsage *add);
 static void WalUsageAdd(WalUsage *dst, WalUsage *add);
 
 /* GPDB specific */
@@ -87,6 +86,7 @@ InstrInit(Instrumentation *instr, int instrument_options)
 	instr->need_bufusage = (instrument_options & INSTRUMENT_BUFFERS) != 0;
 	instr->need_walusage = (instrument_options & INSTRUMENT_WAL) != 0;
 	instr->need_timer = (instrument_options & INSTRUMENT_TIMER) != 0;
+	instr->need_cdb = (instrument_options & INSTRUMENT_CDB) != 0;
 }
 
 /* Entry to a plan node */
@@ -271,7 +271,7 @@ InstrAccumParallelQuery(BufferUsage *bufusage, WalUsage *walusage)
 }
 
 /* dst += add */
-static void
+void
 BufferUsageAdd(BufferUsage *dst, const BufferUsage *add)
 {
 	dst->shared_blks_hit += add->shared_blks_hit;
@@ -286,6 +286,8 @@ BufferUsageAdd(BufferUsage *dst, const BufferUsage *add)
 	dst->temp_blks_written += add->temp_blks_written;
 	INSTR_TIME_ADD(dst->blk_read_time, add->blk_read_time);
 	INSTR_TIME_ADD(dst->blk_write_time, add->blk_write_time);
+	INSTR_TIME_ADD(dst->temp_blk_read_time, add->temp_blk_read_time);
+	INSTR_TIME_ADD(dst->temp_blk_write_time, add->temp_blk_write_time);
 }
 
 /* dst += add - sub */
@@ -308,6 +310,10 @@ BufferUsageAccumDiff(BufferUsage *dst,
 						  add->blk_read_time, sub->blk_read_time);
 	INSTR_TIME_ACCUM_DIFF(dst->blk_write_time,
 						  add->blk_write_time, sub->blk_write_time);
+	INSTR_TIME_ACCUM_DIFF(dst->temp_blk_read_time,
+						  add->temp_blk_read_time, sub->temp_blk_read_time);
+	INSTR_TIME_ACCUM_DIFF(dst->temp_blk_write_time,
+						  add->temp_blk_write_time, sub->temp_blk_write_time);
 }
 
 /* Calculate number slots from gp_instrument_shmem_size */
@@ -500,8 +506,9 @@ pickInstrFromShmem(const Plan *plan, int instrument_options)
 		MemoryContextSwitchTo(contextSave);
 	}
 
-	if (NULL != instr && instrument_options & (INSTRUMENT_TIMER | INSTRUMENT_CDB))
+	if (instr != NULL)
 	{
+		instr->need_bufusage = (instrument_options & INSTRUMENT_BUFFERS) != 0;
 		instr->need_timer = (instrument_options & INSTRUMENT_TIMER) != 0;
 		instr->need_cdb = (instrument_options & INSTRUMENT_CDB) != 0;
 	}

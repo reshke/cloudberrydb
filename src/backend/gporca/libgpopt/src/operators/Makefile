@@ -93,6 +93,8 @@ OBJS        = CExpression.o \
               CPhysicalDynamicIndexScan.o \
               CPhysicalDynamicScan.o \
               CPhysicalDynamicTableScan.o \
+              CPhysicalAppendTableScan.o \
+              CPhysicalParallelAppendTableScan.o \
               CPhysicalForeignScan.o \
               CPhysicalFilter.o \
               CPhysicalFullMergeJoin.o \
@@ -123,6 +125,7 @@ OBJS        = CExpression.o \
               CPhysicalMotionRoutedDistribute.o \
               CPhysicalDynamicForeignScan.o \
               CPhysicalNLJoin.o \
+              CPhysicalParallelTableScan.o \
               CPhysicalParallelUnionAll.o \
               CPhysicalPartitionSelector.o \
               CPhysicalRightOuterHashJoin.o \

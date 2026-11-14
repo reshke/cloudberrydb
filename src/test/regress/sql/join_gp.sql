@@ -440,6 +440,12 @@ set enable_nestloop = 1;
 set enable_material = 0;
 set enable_seqscan = 0;
 set enable_bitmapscan = 0;
+-- The index chosen for tenk2 (tenk2_unique2 or tenk2_hundred) is non-deterministic
+-- since width=0 means any index works equally well.
+--
+-- start_matchignore
+-- m/Index Only Scan using tenk2_\w+ on tenk2/
+-- end_matchignore
 explain select tenk1.unique2 >= 0 from tenk1 left join tenk2 on true limit 1;
 select tenk1.unique2 >= 0 from tenk1 left join tenk2 on true limit 1;
 reset enable_nestloop;
@@ -1310,3 +1316,63 @@ drop table if exists repli_t1_pk;
 drop table if exists repli_t2_pk;
 drop table if exists repli_t3_pk;
 drop table if exists repli_t4_pk;
+
+--
+-- Test that a join qual containing an outer-level reference
+-- is correctly identified as referring to the outer
+-- query, so that the join motion is planned in the parent slice.
+--
+create table lat_oq_t2(i int) distributed by (i);
+create table lat_oq_t3(i int) distributed by (i);
+insert into lat_oq_t2 select generate_series(1,10);
+insert into lat_oq_t3 select generate_series(1,10);
+
+explain (costs off) select * from generate_series(1,2) t1, lateral (select t3.i from lat_oq_t2 t2 join lat_oq_t3 t3 on t2.i = t3.i + t1 order by 1) z;
+select * from generate_series(1,2) t1, lateral (select t3.i from lat_oq_t2 t2 join lat_oq_t3 t3 on t2.i = t3.i + t1 order by 1) z;
+
+drop table lat_oq_t2;
+drop table lat_oq_t3;
+
+--
+-- Test that ORCA can plan a USING join whose merged column is the left input
+-- coerced with a binary-compatible cast (RelabelType), e.g. varchar vs text or
+-- int vs oid. The query-to-DXL translator used to assert on such join alias
+-- vars and fall back to the Postgres planner.
+--
+create table using_coerce_t1(k varchar(10), f2 int) distributed by (f2);
+create table using_coerce_t2(k text, f2 oid) distributed by (f2);
+insert into using_coerce_t1 values ('a', 1), ('b', 2);
+insert into using_coerce_t2 values ('a', 1), ('c', 3);
+
+explain (costs off) select k from using_coerce_t1 left join using_coerce_t2 using(k) order by 1;
+select k from using_coerce_t1 left join using_coerce_t2 using(k) order by 1;
+select f2, count(*) from using_coerce_t1 left join using_coerce_t2 using(f2) group by f2 order by 1;
+select f2, count(*) from using_coerce_t1 x(x0,x1) left join (using_coerce_t1 left join using_coerce_t2 using(f2)) on (x0 = 'a') group by f2 order by 1;
+
+-- Quals are deliberately not flattened by flatten_join_alias_var_optimizer, so
+-- a predicate on the merged column references the computed join output column
+-- directly. Without a projection producing it ORCA fell back with
+-- "Attribute number N not found in project list".
+explain (costs off) select k from using_coerce_t1 left join using_coerce_t2 using(k) where k = 'a';
+select k from using_coerce_t1 left join using_coerce_t2 using(k) where k = 'a';
+select f2 from using_coerce_t1 join using_coerce_t2 using(f2) where f2 = 1;
+select k from using_coerce_t1 full join using_coerce_t2 using(k) where k = 'c';
+
+drop table using_coerce_t1;
+drop table using_coerce_t2;
+
+--
+-- Same, for a merged column that needs a real cast function (FuncExpr) rather
+-- than a binary-compatible relabel.
+--
+create table using_coerce_t3(k int, v int) distributed by (v);
+create table using_coerce_t4(k bigint, v int) distributed by (v);
+insert into using_coerce_t3 values (1, 1), (2, 2);
+insert into using_coerce_t4 values (1, 1), (3, 3);
+
+explain (costs off) select k from using_coerce_t3 left join using_coerce_t4 using(k) where k = 1;
+select k from using_coerce_t3 left join using_coerce_t4 using(k) where k = 1;
+select k from using_coerce_t3 full join using_coerce_t4 using(k) order by 1;
+
+drop table using_coerce_t3;
+drop table using_coerce_t4;

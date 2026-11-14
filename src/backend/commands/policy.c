@@ -3,7 +3,7 @@
  * policy.c
  *	  Commands for manipulating policies.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/commands/policy.c
@@ -84,7 +84,7 @@ RangeVarCallbackForPolicy(const RangeVar *rv, Oid relid, Oid oldrelid,
 	relkind = classform->relkind;
 
 	/* Must own relation. */
-	if (!pg_class_ownercheck(relid, GetUserId()))
+	if (!object_ownercheck(RelationRelationId, relid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relid)), rv->relname);
 
 	/* No system table modifications unless explicitly allowed. */
@@ -422,6 +422,8 @@ RemovePolicyById(Oid policy_id)
  * Returns false if the role was not removed because it would have left
  * polroles empty (which is disallowed, though perhaps it should not be).
  * On false return, the caller should instead drop the policy altogether.
+ * Note that a warning is raised and true is returned if we don't own the
+ * table, as the policy should be left alone in that case.
  *
  * roleid - the oid of the role to remove
  * classid - should always be PolicyRelationId
@@ -469,6 +471,25 @@ RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id)
 	/* Identify rel the policy belongs to */
 	relid = ((Form_pg_policy) GETSTRUCT(tuple))->polrelid;
 
+	/*
+	 * Only the table owner can remove the role from the policy, so leave it
+	 * alone if we aren't the owner.
+	 */
+	if (!object_ownercheck(RelationRelationId, relid, GetUserId()))
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_WARNING_PRIVILEGE_NOT_REVOKED),
+				 errmsg("role \"%s\" could not be removed from policy \"%s\" for table \"%s\"",
+						GetUserNameFromId(roleid, false),
+						NameStr(((Form_pg_policy) GETSTRUCT(tuple))->polname),
+						get_rel_name(relid))));
+
+		systable_endscan(sscan);
+		table_close(pg_policy_rel, RowExclusiveLock);
+
+		return true;
+	}
+
 	/* Get the current set of roles */
 	roles_datum = heap_getattr(tuple,
 							   Anum_pg_policy_polroles,
@@ -512,8 +533,7 @@ RemoveRoleFromObjectPolicy(Oid roleid, Oid classid, Oid policy_id)
 		memset(isnull, 0, sizeof(isnull));
 
 		/* This is the array for the new tuple */
-		role_ids = construct_array(role_oids, num_roles, OIDOID,
-								   sizeof(Oid), true, TYPALIGN_INT);
+		role_ids = construct_array_builtin(role_oids, num_roles, OIDOID);
 
 		replaces[Anum_pg_policy_polroles - 1] = true;
 		values[Anum_pg_policy_polroles - 1] = PointerGetDatum(role_ids);
@@ -630,8 +650,7 @@ CreatePolicy(CreatePolicyStmt *stmt)
 
 	/* Collect role ids */
 	role_oids = policy_role_list_to_array(stmt->roles, &nitems);
-	role_ids = construct_array(role_oids, nitems, OIDOID,
-							   sizeof(Oid), true, TYPALIGN_INT);
+	role_ids = construct_array_builtin(role_oids, nitems, OIDOID);
 
 	/* Parse the supplied clause */
 	qual_pstate = make_parsestate(NULL);
@@ -743,9 +762,12 @@ CreatePolicy(CreatePolicyStmt *stmt)
 
 	recordDependencyOn(&myself, &target, DEPENDENCY_AUTO);
 
+	CheckUsageOnTypesInExpr(qual, qual_pstate->p_rtable, GetUserId());
 	recordDependencyOnExpr(&myself, qual, qual_pstate->p_rtable,
 						   DEPENDENCY_NORMAL);
 
+	CheckUsageOnTypesInExpr(with_check_qual, with_check_pstate->p_rtable,
+							GetUserId());
 	recordDependencyOnExpr(&myself, with_check_qual,
 						   with_check_pstate->p_rtable, DEPENDENCY_NORMAL);
 
@@ -831,8 +853,7 @@ AlterPolicy(AlterPolicyStmt *stmt)
 	if (stmt->roles != NULL)
 	{
 		role_oids = policy_role_list_to_array(stmt->roles, &nitems);
-		role_ids = construct_array(role_oids, nitems, OIDOID,
-								   sizeof(Oid), true, TYPALIGN_INT);
+		role_ids = construct_array_builtin(role_oids, nitems, OIDOID);
 	}
 
 	/* Get id of table.  Also handles permissions checks. */
@@ -1091,8 +1112,13 @@ AlterPolicy(AlterPolicyStmt *stmt)
 
 	recordDependencyOn(&myself, &target, DEPENDENCY_AUTO);
 
+	if (stmt->qual)
+		CheckUsageOnTypesInExpr(qual, qual_parse_rtable, GetUserId());
 	recordDependencyOnExpr(&myself, qual, qual_parse_rtable, DEPENDENCY_NORMAL);
 
+	if (stmt->with_check)
+		CheckUsageOnTypesInExpr(with_check_qual, with_check_parse_rtable,
+								GetUserId());
 	recordDependencyOnExpr(&myself, with_check_qual, with_check_parse_rtable,
 						   DEPENDENCY_NORMAL);
 

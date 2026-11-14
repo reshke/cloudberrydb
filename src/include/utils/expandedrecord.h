@@ -3,7 +3,7 @@
  * expandedrecord.h
  *	  Declarations for composite expanded objects.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/expandedrecord.h
@@ -74,7 +74,7 @@ typedef struct ExpandedRecordHeader
 	int32		er_typmod;		/* typmod of the composite type */
 
 	/*
-	 * Tuple descriptor, if we have one, else NULL.  This may point to a
+	 * Tuple descriptor, acquired during construction.  This may point to a
 	 * reference-counted tupdesc originally belonging to the typcache, in
 	 * which case we use a memory context reset callback to release the
 	 * refcount.  It can also be locally allocated in this object's private
@@ -90,10 +90,9 @@ typedef struct ExpandedRecordHeader
 
 	/*
 	 * If we have a Datum-array representation of the record, it's kept here;
-	 * else ER_FLAG_DVALUES_VALID is not set, and dvalues/dnulls may be NULL
-	 * if they've not yet been allocated.  If allocated, the dvalues and
-	 * dnulls arrays are palloc'd within the object private context, and are
-	 * of length matching er_tupdesc->natts.  For pass-by-ref field types,
+	 * else ER_FLAG_DVALUES_VALID is not set.  The dvalues and dnulls arrays
+	 * are allocated along with the header in the object private context, and
+	 * are of length matching er_tupdesc->natts.  For pass-by-ref field types,
 	 * dvalues entries might point either into the fstartptr..fendptr area, or
 	 * to separately palloc'd chunks.
 	 */
@@ -138,10 +137,20 @@ typedef struct ExpandedRecordHeader
 	MemoryContextCallback er_mcb;
 } ExpandedRecordHeader;
 
-/* fmgr macros for expanded record objects */
+/* fmgr functions and macros for expanded record objects */
+static inline Datum
+ExpandedRecordGetDatum(const ExpandedRecordHeader *erh)
+{
+	return EOHPGetRWDatum(&erh->hdr);
+}
+
+static inline Datum
+ExpandedRecordGetRODatum(const ExpandedRecordHeader *erh)
+{
+	return EOHPGetRODatum(&erh->hdr);
+}
+
 #define PG_GETARG_EXPANDED_RECORD(n)  DatumGetExpandedRecord(PG_GETARG_DATUM(n))
-#define ExpandedRecordGetDatum(erh)   EOHPGetRWDatum(&(erh)->hdr)
-#define ExpandedRecordGetRODatum(erh) EOHPGetRODatum(&(erh)->hdr)
 #define PG_RETURN_EXPANDED_RECORD(x)  PG_RETURN_DATUM(ExpandedRecordGetDatum(x))
 
 /* assorted other macros */
@@ -207,10 +216,8 @@ extern void expanded_record_set_fields(ExpandedRecordHeader *erh,
 static inline TupleDesc
 expanded_record_get_tupdesc(ExpandedRecordHeader *erh)
 {
-	if (likely(erh->er_tupdesc != NULL))
-		return erh->er_tupdesc;
-	else
-		return expanded_record_fetch_tupdesc(erh);
+	Assert(erh->er_tupdesc != NULL);
+	return erh->er_tupdesc;
 }
 
 /* Get value of record field */

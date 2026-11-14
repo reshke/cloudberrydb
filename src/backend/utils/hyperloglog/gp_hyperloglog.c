@@ -66,6 +66,7 @@
 #include "utils/lsyscache.h"
 #include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
+#include "varatt.h"
 
 #include "utils/hyperloglog/gp_hyperloglog.h"
 
@@ -893,7 +894,7 @@ GpMurmurHash64A (const void * key, int len, unsigned int seed)
         uint64_t k;
 
 #if (BYTE_ORDER == LITTLE_ENDIAN)
-        k = *((uint64_t*)data);
+        memcpy(&k, data, sizeof(k));
 #else
         k = (uint64_t) data[0];
         k |= (uint64_t) data[1] << 8;

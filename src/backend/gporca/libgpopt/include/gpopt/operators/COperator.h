@@ -188,6 +188,7 @@ public:
 		EopScalarFieldSelect,
 
 		EopPhysicalTableScan,
+		EopPhysicalParallelTableScan,
 		EopPhysicalForeignScan,
 		EopPhysicalIndexScan,
 		EopPhysicalIndexOnlyScan,
@@ -215,6 +216,9 @@ public:
 		EopPhysicalSequenceProject,
 		EopPhysicalHashSequenceProject,
 		EopPhysicalDynamicIndexScan,
+
+		EopPhysicalAppendTableScan,
+		EopPhysicalParallelAppendTableScan,
 
 		EopPhysicalInnerHashJoin,
 		EopPhysicalLeftOuterHashJoin,
