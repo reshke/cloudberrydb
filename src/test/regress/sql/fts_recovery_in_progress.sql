@@ -2,7 +2,28 @@
 -- 'fts_conn_startup_packet' is used to simulate the primary responding
 -- in-recovery to FTS, primary is not actually going through crash-recovery in
 -- test.
-select role, preferred_role, mode, status from gp_segment_configuration where content = 0;
+-- Probe before injecting recovery faults: a mirror may still be catching up
+-- after an earlier test, and FTS can only promote a synchronized mirror.
+create function pg_temp.wait_for_fts_sync(timeout_seconds integer default 120)
+returns void as $$
+declare
+  deadline timestamptz := clock_timestamp() + timeout_seconds * interval '1 second';
+begin
+  loop
+    perform gp_request_fts_probe_scan();
+    if (select count(*) = 2 and bool_and(mode = 's' and status = 'u')
+        from gp_segment_configuration where content = 0) then
+      return;
+    end if;
+    if clock_timestamp() >= deadline then
+      raise exception 'timed out waiting for content 0 primary and mirror to synchronize';
+    end if;
+    perform pg_sleep(0.1);
+  end loop;
+end;
+$$ language plpgsql;
+select pg_temp.wait_for_fts_sync();
+select role, preferred_role, mode, status from gp_segment_configuration where content = 0 order by role;
 select gp_inject_fault_infinite('fts_conn_startup_packet', 'skip', dbid)
 from gp_segment_configuration where content = 0 and role = 'p';
 -- to make test deterministic and fast
@@ -27,7 +48,7 @@ select gp_request_fts_probe_scan();
 -- end_ignore
 select gp_wait_until_triggered_fault('fts_conn_startup_packet', 3, dbid)
 from gp_segment_configuration where content = 0 and role = 'p';
-select role, preferred_role, mode, status from gp_segment_configuration where content = 0;
+select role, preferred_role, mode, status from gp_segment_configuration where content = 0 order by role;
 
 -- test other scenario where recovery on primary is hung and hence FTS marks
 -- primary down and promotes mirror. When 'fts_recovery_in_progress' is set to
@@ -44,67 +65,57 @@ select gp_request_fts_probe_scan();
 \!gpfts -A -D
 \!gpfts -A -D
 -- end_ignore
-select role, preferred_role, mode, status from gp_segment_configuration where content = 0;
-
--- The remaining steps are to bring back the cluster to original state.
--- start_ignore
-
--- Wait until content 0 mirror is promoted otherwise, gprecoverseg
--- that runs after will fail.
+-- Wait for the role change as well as the promoted mirror accepting queries.
 do $$
 declare
-  y int;
+  deadline timestamptz := clock_timestamp() + interval '120 seconds';
 begin
-  for i in 1..120 loop
-    begin
-      select count(*) into y from gp_dist_random('gp_id');
-      raise notice 'got % results, mirror must have been promoted', y;
-      return;
-    exception
-      when others then
-        raise notice 'mirror may not be promoted yet: %', sqlerrm;
-        perform pg_sleep(1);
-    end;
+  loop
+    perform gp_request_fts_probe_scan();
+    if exists (select 1 from gp_segment_configuration
+               where content = 0 and role = 'p' and preferred_role = 'm'
+                 and status = 'u') then
+      begin
+        perform count(*) from gp_dist_random('gp_id');
+        return;
+      exception
+        when others then
+          -- Promotion can still be finishing after FTS changes the catalog.
+          null;
+      end;
+    end if;
+    if clock_timestamp() >= deadline then
+      raise exception 'timed out waiting for content 0 mirror promotion';
+    end if;
+    perform pg_sleep(0.1);
   end loop;
 end;
 $$;
+
+select role, preferred_role, mode, status from gp_segment_configuration where content = 0 order by role;
+
+-- The remaining steps are to bring back the cluster to original state.
+-- start_ignore
 
 \! gprecoverseg -av --no-progress
 \!gpfts -A -D
 -- end_ignore
 
--- loop while segments come in sync
-do $$
-begin
-  for i in 1..120 loop
-    if (select count(*) = 0 from gp_segment_configuration where content = 0 and mode != 's') then
-      return;
-    end if;
-    perform gp_request_fts_probe_scan();
-  end loop;
-end;
-$$;
-select role, preferred_role, mode, status from gp_segment_configuration where content = 0;
+-- Wait for both catalog rows to report a live, synchronized segment.
+select pg_temp.wait_for_fts_sync();
+select role, preferred_role, mode, status from gp_segment_configuration where content = 0 order by role;
 
 -- start_ignore
 \! gprecoverseg -arv
 \!gpfts -A -D
 -- end_ignore
 
--- loop while segments come in sync
-do $$
-begin
-  for i in 1..120 loop
-    if (select count(*) = 0 from gp_segment_configuration where content = 0 and mode != 's') then
-      return;
-    end if;
-    perform gp_request_fts_probe_scan();
-  end loop;
-end;
-$$;
-select role, preferred_role, mode, status from gp_segment_configuration where content = 0;
+-- Wait for both catalog rows to report a live, synchronized segment.
+select pg_temp.wait_for_fts_sync();
+select role, preferred_role, mode, status from gp_segment_configuration where content = 0 order by role;
 
 -- start_ignore
+\!gpconfig -r gp_fts_probe_retries --masteronly
 \!gpconfig -r gp_gang_creation_retry_count --skipvalidation --masteronly
 \!gpconfig -r gp_gang_creation_retry_timer --skipvalidation --masteronly
 \!gpstop -u
