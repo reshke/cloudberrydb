@@ -176,7 +176,8 @@ SKIP:
 # Write some files to test that they are not copied.
 foreach my $filename (
 	qw(backup_label tablespace_map postgresql.auto.conf.tmp
-	current_logfiles.tmp global/pg_internal.init.123))
+	current_logfiles.tmp global/pg_internal.init.123
+	global/pg_distributedlog_horizon.tmp))
 {
 	open my $file, '>>', "$pgdata/$filename";
 	print $file "DONOTCOPY";
@@ -221,12 +222,21 @@ foreach my $filename (@tempRelationFiles)
 	append_to_file("$pgdata/base/$postgresOid/$filename", 'TEMP_RELATION');
 }
 
-# Run base backup.
-$node->command_ok(
+# Horizon metadata must be copied without treating it as a relation page.
+# Remove the dummy content below before any later test starts a server.
+append_to_file "$pgdata/global/pg_distributedlog_horizon", "DLOG-HORIZON";
+
+# Run base backup, checking that horizon metadata causes no checksum warning.
+$node->command_checks_all(
 	[ @pg_basebackup_defs, '-D', "$tempdir/backup", '-X', 'none', '--target-gp-dbid', '123' ],
+	0, [qr/^$/],
+	[qr/\A(?!.*(?:could not verify checksum|checksum verification failed)).*\z/s],
 	'pg_basebackup runs');
 ok(-f "$tempdir/backup/PG_VERSION", 'backup was created');
 ok(-f "$tempdir/backup/backup_manifest", 'backup manifest included');
+is(slurp_file("$tempdir/backup/global/pg_distributedlog_horizon"),
+	"DLOG-HORIZON", 'DLOG horizon metadata is copied unchanged');
+unlink "$pgdata/global/pg_distributedlog_horizon";
 
 # Permissions on backup should be default
 SKIP:
@@ -258,7 +268,8 @@ foreach my $dirname (
 # These files should not be copied.
 foreach my $filename (
 	qw(postgresql.auto.conf.tmp postmaster.opts postmaster.pid tablespace_map current_logfiles.tmp
-	global/pg_internal.init global/pg_internal.init.123))
+	global/pg_internal.init global/pg_internal.init.123
+	global/pg_distributedlog_horizon.tmp))
 {
 	ok(!-f "$tempdir/backup/$filename", "$filename not copied");
 }

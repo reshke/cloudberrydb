@@ -115,6 +115,11 @@ append_to_file "$pgdata/global/pgsql_tmp/1.1", "foo";
 append_to_file "$pgdata/global/pg_internal.init", "foo";
 append_to_file "$pgdata/global/pg_internal.init.123", "foo";
 
+# DLOG horizon metadata is not stored in data-page format. Its temporary
+# file can also remain after an interrupted horizon update.
+append_to_file "$pgdata/global/pg_distributedlog_horizon", "DLOG-HORIZON";
+append_to_file "$pgdata/global/pg_distributedlog_horizon.tmp", "DLOG-TEMP";
+
 # These are non-postgres macOS files, which should be ignored by the scan.
 # Only perform this test on non-macOS systems though as creating incorrect
 # system files may have side effects on macOS.

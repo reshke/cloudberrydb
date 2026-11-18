@@ -204,6 +204,7 @@ static const struct exclude_list_item excludeFiles[] =
 
 	/* Skip current log file temporary file */
 	{LOG_METAINFO_DATAFILE_TMP, false},
+	{"pg_distributedlog_horizon.tmp", false},
 
 	/*
 	 * Skip relation cache because it is rebuilt on startup.  This includes
@@ -246,6 +247,8 @@ static const struct exclude_list_item noChecksumFiles[] = {
 	{"pg_control", false},
 	{"pg_filenode.map", false},
 	{"pg_internal.init", true},
+	/* DLOG horizons have their own CRC, not data-page checksums. */
+	{"pg_distributedlog_horizon", true},
 	{"PG_VERSION", false},
 #ifdef EXEC_BACKEND
 	{"config_exec_params", true},
