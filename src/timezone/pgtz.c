@@ -32,7 +32,7 @@ pg_tz	   *log_timezone = NULL;
 
 
 static bool scan_directory_ci(const char *dirname,
-							  const char *fname, int fnamelen,
+							  const char *fname, size_t fnamelen,
 							  char *canonname, int canonnamelen);
 
 
@@ -116,7 +116,7 @@ pg_open_tzfile(const char *name, char *canonname)
 	for (;;)
 	{
 		const char *slashptr;
-		int			fnamelen;
+		size_t		fnamelen;
 
 		slashptr = strchr(fname, '/');
 		if (slashptr)
@@ -148,7 +148,7 @@ pg_open_tzfile(const char *name, char *canonname)
  * copy the actual filename into canonname and return true.
  */
 static bool
-scan_directory_ci(const char *dirname, const char *fname, int fnamelen,
+scan_directory_ci(const char *dirname, const char *fname, size_t fnamelen,
 				  char *canonname, int canonnamelen)
 {
 	bool		found = false;
