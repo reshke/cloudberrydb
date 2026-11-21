@@ -320,6 +320,7 @@ planner(Query *parse, const char *query_string, int cursorOptions,
 {
 	PlannedStmt *result;
 	instr_time	starttime, endtime;
+	bool		log_optimization_time = gp_log_optimization_time;
 	OptimizerOptions *optimizer_options;
 
 	optimizer_options = palloc(sizeof(OptimizerOptions));
@@ -347,12 +348,12 @@ planner(Query *parse, const char *query_string, int cursorOptions,
 	}
 	if (planner_hook)
 	{
-		if (gp_log_optimization_time)
+		if (log_optimization_time)
 			INSTR_TIME_SET_CURRENT(starttime);
 
 		result = (*planner_hook) (parse, query_string, cursorOptions, boundParams, optimizer_options);
 
-		if (gp_log_optimization_time)
+		if (log_optimization_time)
 		{
 			INSTR_TIME_SET_CURRENT(endtime);
 			INSTR_TIME_SUBTRACT(endtime, starttime);
@@ -382,6 +383,9 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	PlannerConfig *config;
 	instr_time		starttime;
 	instr_time		endtime;
+	bool			log_optimization_time = gp_log_optimization_time;
+
+	INSTR_TIME_SET_ZERO(starttime);
 
 	/*
 	 * Use ORCA only if it is enabled and we are in a master QD process.
@@ -416,7 +420,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		}
 #endif
 
-		if (gp_log_optimization_time)
+		if (log_optimization_time)
 			INSTR_TIME_SET_CURRENT(starttime);
 
 #ifdef USE_ORCA
@@ -428,7 +432,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		result = NULL;
 #endif
 
-		if (gp_log_optimization_time)
+		if (log_optimization_time)
 		{
 			INSTR_TIME_SET_CURRENT(endtime);
 			INSTR_TIME_SUBTRACT(endtime, starttime);
@@ -443,7 +447,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	 * Fall back to using the PostgreSQL planner in case Orca didn't run (in
 	 * utility mode or on a segment) or if it didn't produce a plan.
 	 */
-	if (gp_log_optimization_time)
+	if (log_optimization_time)
 		INSTR_TIME_SET_CURRENT(starttime);
 
 	/*
@@ -862,7 +866,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 
 	Assert(result->utilityStmt == NULL || IsA(result->utilityStmt, DeclareCursorStmt));
 
-	if (gp_log_optimization_time)
+	if (log_optimization_time)
 	{
 		INSTR_TIME_SET_CURRENT(endtime);
 		INSTR_TIME_SUBTRACT(endtime, starttime);
@@ -8356,19 +8360,18 @@ add_paths_to_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 				else
 					dNumGroups = dNumGroupsTotal;
 
-				// if (parse->hasAggs)
-					add_path(grouped_rel, (Path *)
-							 create_agg_path(root,
-											 grouped_rel,
-											 path,
-											 grouped_rel->reltarget,
-											 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
-											 AGGSPLIT_FINAL_DESERIAL,
-											 false,
-											 root->processed_groupClause,
-											 havingQual,
-											 agg_final_costs,
-											 dNumGroups), root);
+				add_path(grouped_rel, (Path *)
+						 create_agg_path(root,
+										 grouped_rel,
+										 path,
+										 grouped_rel->reltarget,
+										 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+										 AGGSPLIT_FINAL_DESERIAL,
+										 false,
+										 root->processed_groupClause,
+										 havingQual,
+										 agg_final_costs,
+										 dNumGroups), root);
 #if 0
 				else
 					add_path(grouped_rel, (Path *)

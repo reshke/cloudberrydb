@@ -1303,7 +1303,7 @@ PG_TRY();
 	pushed_snapshot = false;
 	while (es)
 	{
-		bool		completed;
+		bool		completed = false;
 
 		if (es->status == F_EXEC_START)
 		{
