@@ -95,6 +95,7 @@ has_drive_prefix(const char *path)
 #ifdef WIN32
 	return skip_drive(path) != path;
 #else
+	(void) path;
 	return false;
 #endif
 }
@@ -240,6 +241,8 @@ make_native_path(char *filename)
 	for (p = filename; *p; p++)
 		if (*p == '/')
 			*p = '\\';
+#else
+	(void) filename;
 #endif
 }
 
@@ -268,6 +271,8 @@ cleanup_path(char *path)
 	/* Replace '\' with '/' */
 	/* All server-safe encodings are alike here, so just use PG_SQL_ASCII */
 	debackslash_path(path, PG_SQL_ASCII);
+#else
+	(void) path;
 #endif
 }
 
@@ -367,6 +372,8 @@ canonicalize_path_enc(char *path, int encoding)
 	p = path + strlen(path);
 	if (p > path && *(p - 1) == '"')
 		*(p - 1) = '/';
+#else
+	(void) encoding;
 #endif
 
 	/*
