@@ -95,7 +95,7 @@ pg_strong_random(void *buf, size_t len)
 	return false;
 }
 
-#elif WIN32
+#elif defined(WIN32)
 
 #include <wincrypt.h>
 /*
