@@ -87,7 +87,7 @@ extern bool kmgr_wrap_data_key(PgCipherCtx *ctx, CryptoKey *in, unsigned char *o
 extern bool kmgr_unwrap_data_key(PgCipherCtx *ctx, unsigned char *in, int inlen, CryptoKey *out);
 extern bool kmgr_verify_cluster_key(unsigned char *cluster_key,
 									unsigned char **in_keys, int *klens, CryptoKey *out_keys);
-extern int	kmgr_run_cluster_key_command(char *cluster_key_command,
+extern int	kmgr_run_cluster_key_command(char *command_string,
 										 char *buf, int size, char *dir,
 										 int terminal_fd);
 extern void kmgr_read_wrapped_data_keys(const char *path, unsigned char **keys,

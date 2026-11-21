@@ -232,6 +232,10 @@ getnameinfo_unix(const struct sockaddr_un *sa, int salen,
 {
 	int			ret;
 
+	/* These arguments are relevant to IP sockets, not Unix socket names. */
+	(void) salen;
+	(void) flags;
+
 	/* Invalid arguments. */
 	if (sa == NULL || sa->sun_family != AF_UNIX ||
 		(node == NULL && service == NULL))
