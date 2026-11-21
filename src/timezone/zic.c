@@ -456,7 +456,10 @@ growalloc(void *ptr, size_t itemsize, ptrdiff_t nitems, ptrdiff_t *nitems_alloc)
 	else
 	{
 		ptrdiff_t	nitems_max = PTRDIFF_MAX - WORK_AROUND_QTBUG_53071;
-		ptrdiff_t	amax = nitems_max < SIZE_MAX ? nitems_max : SIZE_MAX;
+		ptrdiff_t	amax = nitems_max;
+
+		if ((uintmax_t) nitems_max > (uintmax_t) SIZE_MAX)
+			amax = (ptrdiff_t) SIZE_MAX;
 
 		if ((amax - 1) / 3 * 2 < *nitems_alloc)
 			memory_exhausted(_("integer overflow"));
@@ -1515,7 +1518,7 @@ inrule(char **fields, int nfields)
 			fields[RF_MONTH], fields[RF_DAY], fields[RF_TOD]);
 	r.r_name = ecpyalloc(fields[RF_NAME]);
 	r.r_abbrvar = ecpyalloc(fields[RF_ABBRVAR]);
-	if (max_abbrvar_len < strlen(r.r_abbrvar))
+	if ((size_t) max_abbrvar_len < strlen(r.r_abbrvar))
 		max_abbrvar_len = strlen(r.r_abbrvar);
 	rules = growalloc(rules, sizeof *rules, nrules, &nrules_alloc);
 	rules[nrules++] = r;
@@ -1631,7 +1634,7 @@ inzsub(char **fields, int nfields, bool iscont)
 					z.z_format);
 		cp1[cp - fields[i_format]] = 's';
 	}
-	if (max_format_len < strlen(z.z_format))
+	if ((size_t) max_format_len < strlen(z.z_format))
 		max_format_len = strlen(z.z_format);
 	hasuntil = nfields > i_untilyear;
 	if (hasuntil)
@@ -1670,7 +1673,7 @@ inzsub(char **fields, int nfields, bool iscont)
 }
 
 static zic_t
-getleapdatetime(char **fields, int nfields, bool expire_line)
+getleapdatetime(char **fields, bool expire_line)
 {
 	const char *cp;
 	const struct lookup *lp;
@@ -1765,7 +1768,7 @@ inleap(char **fields, int nfields)
 		error(_("wrong number of fields on Leap line"));
 	else
 	{
-		zic_t		t = getleapdatetime(fields, nfields, false);
+		zic_t		t = getleapdatetime(fields, false);
 
 		if (0 <= t)
 		{
@@ -1798,7 +1801,7 @@ inexpires(char **fields, int nfields)
 	else if (0 <= leapexpires)
 		error(_("multiple Expires lines"));
 	else
-		leapexpires = getleapdatetime(fields, nfields, true);
+		leapexpires = getleapdatetime(fields, true);
 }
 
 static void
@@ -2409,7 +2412,7 @@ writezone(const char *const name, const char *const string, char version,
 						: i == thisdefaulttype ? old0 : i]
 					= thistypecnt++;
 
-		for (i = 0; i < sizeof indmap / sizeof indmap[0]; ++i)
+		for (i = 0; i < (ptrdiff_t) (sizeof indmap / sizeof indmap[0]); ++i)
 			indmap[i] = -1;
 		thischarcnt = stdcnt = utcnt = 0;
 		for (i = old0; i < typecnt; i++)
@@ -2641,6 +2644,7 @@ doabbr(char *abbr, struct zone const *zp, char const *letters,
 	const char	   *slashp;
 	size_t		len;
 	char const *format = zp->z_format;
+	char const *percent;
 
 	slashp = strchr(format, '/');
 	if (slashp == NULL)
@@ -2651,7 +2655,19 @@ doabbr(char *abbr, struct zone const *zp, char const *letters,
 			letters = abbroffset(letterbuf, zp->z_stdoff + save);
 		else if (!letters)
 			letters = "%s";
-		sprintf(abbr, format, letters);
+
+		percent = strchr(format, '%');
+		if (percent)
+		{
+			size_t		prefix_len = percent - format;
+
+			Assert(zp->z_format_specifier != '\0');
+			memcpy(abbr, format, prefix_len);
+			strcpy(abbr + prefix_len, letters);
+			strcat(abbr, percent + 2);
+		}
+		else
+			strcpy(abbr, format);
 	}
 	else if (isdst)
 	{

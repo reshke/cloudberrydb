@@ -112,7 +112,8 @@ enum warn
 };
 
 static char *_add(const char *str, char *pt, const char *ptlim);
-static char *_conv(int n, const char *format, char *pt, const char *ptlim);
+static char *_conv(int n, int width, bool zero_pad, char *pt,
+				   const char *ptlim);
 static char *_fmt(const char *format, const struct pg_tm *t, char *pt, const char *ptlim,
 				  enum warn *warnp);
 static char *_yconv(int a, int b, bool convert_top, bool convert_yy, char *pt, char const *ptlim);
@@ -222,7 +223,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					pt = _fmt("%m/%d/%y", t, pt, ptlim, warnp);
 					continue;
 				case 'd':
-					pt = _conv(t->tm_mday, "%02d", pt, ptlim);
+					pt = _conv(t->tm_mday, 2, true, pt, ptlim);
 					continue;
 				case 'E':
 				case 'O':
@@ -235,21 +236,21 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					 */
 					goto label;
 				case 'e':
-					pt = _conv(t->tm_mday, "%2d", pt, ptlim);
+					pt = _conv(t->tm_mday, 2, false, pt, ptlim);
 					continue;
 				case 'F':
 					pt = _fmt("%Y-%m-%d", t, pt, ptlim, warnp);
 					continue;
 				case 'H':
-					pt = _conv(t->tm_hour, "%02d", pt, ptlim);
+					pt = _conv(t->tm_hour, 2, true, pt, ptlim);
 					continue;
 				case 'I':
 					pt = _conv((t->tm_hour % 12) ?
 							   (t->tm_hour % 12) : 12,
-							   "%02d", pt, ptlim);
+							   2, true, pt, ptlim);
 					continue;
 				case 'j':
-					pt = _conv(t->tm_yday + 1, "%03d", pt, ptlim);
+					pt = _conv(t->tm_yday + 1, 3, true, pt, ptlim);
 					continue;
 				case 'k':
 
@@ -260,7 +261,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					 * version 3.0. That is, "%k" and "%l" have been swapped.
 					 * (ado, 1993-05-24)
 					 */
-					pt = _conv(t->tm_hour, "%2d", pt, ptlim);
+					pt = _conv(t->tm_hour, 2, false, pt, ptlim);
 					continue;
 #ifdef KITCHEN_SINK
 				case 'K':
@@ -281,13 +282,13 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					 */
 					pt = _conv((t->tm_hour % 12) ?
 							   (t->tm_hour % 12) : 12,
-							   "%2d", pt, ptlim);
+							   2, false, pt, ptlim);
 					continue;
 				case 'M':
-					pt = _conv(t->tm_min, "%02d", pt, ptlim);
+					pt = _conv(t->tm_min, 2, true, pt, ptlim);
 					continue;
 				case 'm':
-					pt = _conv(t->tm_mon + 1, "%02d", pt, ptlim);
+					pt = _conv(t->tm_mon + 1, 2, true, pt, ptlim);
 					continue;
 				case 'n':
 					pt = _add("\n", pt, ptlim);
@@ -305,7 +306,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					pt = _fmt("%I:%M:%S %p", t, pt, ptlim, warnp);
 					continue;
 				case 'S':
-					pt = _conv(t->tm_sec, "%02d", pt, ptlim);
+					pt = _conv(t->tm_sec, 2, true, pt, ptlim);
 					continue;
 				case 'T':
 					pt = _fmt("%H:%M:%S", t, pt, ptlim, warnp);
@@ -316,7 +317,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 				case 'U':
 					pt = _conv((t->tm_yday + DAYSPERWEEK -
 								t->tm_wday) / DAYSPERWEEK,
-							   "%02d", pt, ptlim);
+							   2, true, pt, ptlim);
 					continue;
 				case 'u':
 
@@ -327,7 +328,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 					 */
 					pt = _conv((t->tm_wday == 0) ?
 							   DAYSPERWEEK : t->tm_wday,
-							   "%d", pt, ptlim);
+							   0, false, pt, ptlim);
 					continue;
 				case 'V':		/* ISO 8601 week number */
 				case 'G':		/* ISO 8601 year (four digits) */
@@ -404,7 +405,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 								DAYSPERNYEAR;
 						}
 						if (*format == 'V')
-							pt = _conv(w, "%02d",
+							pt = _conv(w, 2, true,
 									   pt, ptlim);
 						else if (*format == 'g')
 						{
@@ -432,10 +433,10 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 								(t->tm_wday ?
 								 (t->tm_wday - 1) :
 								 (DAYSPERWEEK - 1))) / DAYSPERWEEK,
-							   "%02d", pt, ptlim);
+							   2, true, pt, ptlim);
 					continue;
 				case 'w':
-					pt = _conv(t->tm_wday, "%d", pt, ptlim);
+					pt = _conv(t->tm_wday, 0, false, pt, ptlim);
 					continue;
 				case 'X':
 					pt = _fmt(Locale->X_fmt, t, pt, ptlim, warnp);
@@ -498,7 +499,7 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 						diff /= SECSPERMIN;
 						diff = (diff / MINSPERHOUR) * 100 +
 							(diff % MINSPERHOUR);
-						pt = _conv(diff, "%04d", pt, ptlim);
+						pt = _conv(diff, 4, true, pt, ptlim);
 					}
 					continue;
 				case '+':
@@ -524,11 +525,14 @@ _fmt(const char *format, const struct pg_tm *t, char *pt,
 }
 
 static char *
-_conv(int n, const char *format, char *pt, const char *ptlim)
+_conv(int n, int width, bool zero_pad, char *pt, const char *ptlim)
 {
 	char		buf[INT_STRLEN_MAXIMUM(int) + 1];
 
-	sprintf(buf, format, n);
+	if (zero_pad)
+		snprintf(buf, sizeof(buf), "%0*d", width, n);
+	else
+		snprintf(buf, sizeof(buf), "%*d", width, n);
 	return _add(buf, pt, ptlim);
 }
 
@@ -574,9 +578,9 @@ _yconv(int a, int b, bool convert_top, bool convert_yy,
 		if (lead == 0 && trail < 0)
 			pt = _add("-0", pt, ptlim);
 		else
-			pt = _conv(lead, "%02d", pt, ptlim);
+			pt = _conv(lead, 2, true, pt, ptlim);
 	}
 	if (convert_yy)
-		pt = _conv(((trail < 0) ? -trail : trail), "%02d", pt, ptlim);
+		pt = _conv(((trail < 0) ? -trail : trail), 2, true, pt, ptlim);
 	return pt;
 }
