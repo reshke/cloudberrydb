@@ -2624,7 +2624,7 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_DOMAIN:
 		case OBJECT_ATTRIBUTE:
 			if (!object_ownercheck(address.classId, address.objectId, roleid))
-				aclcheck_error_type(ACLCHECK_NOT_OWNER, address.objectId);\
+				aclcheck_error_type(ACLCHECK_NOT_OWNER, address.objectId);
 			break;
 		case OBJECT_DOMCONSTRAINT:
 			{
