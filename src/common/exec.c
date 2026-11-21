@@ -431,7 +431,7 @@ void
 set_pglocale_pgservice(const char *argv0, const char *app)
 {
 	char		path[MAXPGPATH];
-	char		my_exec_path[MAXPGPATH];
+	char		exec_path[MAXPGPATH];
 
 	/* don't set LC_ALL in the backend */
 	if (strcmp(app, PG_TEXTDOMAIN("postgres")) != 0)
@@ -449,11 +449,11 @@ set_pglocale_pgservice(const char *argv0, const char *app)
 		 */
 	}
 
-	if (find_my_exec(argv0, my_exec_path) < 0)
+	if (find_my_exec(argv0, exec_path) < 0)
 		return;
 
 #ifdef ENABLE_NLS
-	get_locale_path(my_exec_path, path);
+	get_locale_path(exec_path, path);
 	bindtextdomain(app, path);
 	textdomain(app);
 	/* set for libpq to use, but don't override existing setting */
@@ -462,7 +462,7 @@ set_pglocale_pgservice(const char *argv0, const char *app)
 
 	if (getenv("PGSYSCONFDIR") == NULL)
 	{
-		get_etc_path(my_exec_path, path);
+		get_etc_path(exec_path, path);
 		/* set for libpq to use */
 		setenv("PGSYSCONFDIR", path, 0);
 	}

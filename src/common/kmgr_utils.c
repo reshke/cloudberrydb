@@ -170,7 +170,7 @@ kmgr_verify_cluster_key(unsigned char *cluster_key,
  * The return value is the length of the actual result.
  */
 int
-kmgr_run_cluster_key_command(char *cluster_key_command, char *buf,
+kmgr_run_cluster_key_command(char *command_string, char *buf,
 							 int size, char *dir, int terminal_fd)
 {
 	StringInfoData command;
@@ -188,7 +188,7 @@ kmgr_run_cluster_key_command(char *cluster_key_command, char *buf,
 	 */
 	initStringInfo(&command);
 
-	for (sp = cluster_key_command; *sp; sp++)
+	for (sp = command_string; *sp; sp++)
 	{
 		if (*sp == '%')
 		{
