@@ -15,6 +15,8 @@
 
 #include "gpopt/utils/COptTasks.h"
 
+#include <vector>
+
 extern "C" {
 #include "cdb/cdbvars.h"
 #include "optimizer/hints.h"
@@ -1130,14 +1132,15 @@ COptTasks::PrintMissingStatsWarning(CMemoryPool *mp, CMDAccessor *md_accessor,
 
 	if (0 < rel_stats->Size())
 	{
-		int length = NAMEDATALEN * rel_stats->Size() + 200;
-		char msgbuf[length];
+		const size_t length =
+			static_cast<size_t>(NAMEDATALEN) * rel_stats->Size() + 200;
+		std::vector<char> msgbuf(length);
 		snprintf(
-			msgbuf, sizeof(msgbuf),
+			msgbuf.data(), msgbuf.size(),
 			"One or more columns in the following table(s) do not have statistics: %s",
 			CreateMultiByteCharStringFromWCString(wcstr.GetBuffer()));
 		GpdbEreport(
-			ERRCODE_SUCCESSFUL_COMPLETION, NOTICE, msgbuf,
+			ERRCODE_SUCCESSFUL_COMPLETION, NOTICE, msgbuf.data(),
 			"For non-partitioned tables, run analyze <table_name>(<column_list>)."
 			" For partitioned tables, run analyze rootpartition <table_name>(<column_list>)."
 			" See log for columns missing statistics.");
