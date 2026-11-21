@@ -50,7 +50,7 @@ static void debackslash_path(char *path, int encoding);
 static int	pg_sjis_mblen(const unsigned char *s);
 #endif
 static void make_relative_path(char *ret_path, const char *target_path,
-							   const char *bin_path, const char *my_exec_path);
+							   const char *bin_path, const char *exec_path);
 static char *trim_directory(char *path);
 static void trim_trailing_separator(char *path);
 static char *append_subdir_to_path(char *path, char *subdir);
@@ -95,6 +95,7 @@ has_drive_prefix(const char *path)
 #ifdef WIN32
 	return skip_drive(path) != path;
 #else
+	(void) path;
 	return false;
 #endif
 }
@@ -240,6 +241,8 @@ make_native_path(char *filename)
 	for (p = filename; *p; p++)
 		if (*p == '/')
 			*p = '\\';
+#else
+	(void) filename;
 #endif
 }
 
@@ -268,6 +271,8 @@ cleanup_path(char *path)
 	/* Replace '\' with '/' */
 	/* All server-safe encodings are alike here, so just use PG_SQL_ASCII */
 	debackslash_path(path, PG_SQL_ASCII);
+#else
+	(void) path;
 #endif
 }
 
@@ -367,6 +372,8 @@ canonicalize_path_enc(char *path, int encoding)
 	p = path + strlen(path);
 	if (p > path && *(p - 1) == '"')
 		*(p - 1) = '/';
+#else
+	(void) encoding;
 #endif
 
 	/*
@@ -734,25 +741,25 @@ dir_strcmp(const char *s1, const char *s2)
  *	ret_path is the output area (must be of size MAXPGPATH)
  *	target_path is the compiled-in path to the directory we want to find
  *	bin_path is the compiled-in path to the directory of executables
- *	my_exec_path is the actual location of my executable
+ *	exec_path is the actual location of my executable
  *
  * We determine the common prefix of target_path and bin_path, then compare
  * the remainder of bin_path to the last directory component(s) of
- * my_exec_path.  If they match, build the result as the part of my_exec_path
+ * exec_path.  If they match, build the result as the part of exec_path
  * preceding the match, joined to the remainder of target_path.  If no match,
  * return target_path as-is.
  *
  * For example:
  *		target_path  = '/usr/local/share/postgresql'
  *		bin_path	 = '/usr/local/bin'
- *		my_exec_path = '/opt/pgsql/bin/postgres'
+ *		exec_path = '/opt/pgsql/bin/postgres'
  * Given these inputs, the common prefix is '/usr/local/', the tail of
  * bin_path is 'bin' which does match the last directory component of
- * my_exec_path, so we would return '/opt/pgsql/share/postgresql'
+ * exec_path, so we would return '/opt/pgsql/share/postgresql'
  */
 static void
 make_relative_path(char *ret_path, const char *target_path,
-				   const char *bin_path, const char *my_exec_path)
+				   const char *bin_path, const char *exec_path)
 {
 	int			prefix_len;
 	int			tail_start;
@@ -776,10 +783,10 @@ make_relative_path(char *ret_path, const char *target_path,
 	tail_len = strlen(bin_path) - prefix_len;
 
 	/*
-	 * Set up my_exec_path without the actual executable name, and
+	 * Set up exec_path without the actual executable name, and
 	 * canonicalize to simplify comparison to bin_path.
 	 */
-	strlcpy(ret_path, my_exec_path, MAXPGPATH);
+	strlcpy(ret_path, exec_path, MAXPGPATH);
 	trim_directory(ret_path);	/* remove my executable name */
 	canonicalize_path(ret_path);
 
@@ -916,99 +923,99 @@ make_absolute_path(const char *path)
  *	get_share_path
  */
 void
-get_share_path(const char *my_exec_path, char *ret_path)
+get_share_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, PGSHAREDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, PGSHAREDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_etc_path
  */
 void
-get_etc_path(const char *my_exec_path, char *ret_path)
+get_etc_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, SYSCONFDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, SYSCONFDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_include_path
  */
 void
-get_include_path(const char *my_exec_path, char *ret_path)
+get_include_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, INCLUDEDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, INCLUDEDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_pkginclude_path
  */
 void
-get_pkginclude_path(const char *my_exec_path, char *ret_path)
+get_pkginclude_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, PKGINCLUDEDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, PKGINCLUDEDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_includeserver_path
  */
 void
-get_includeserver_path(const char *my_exec_path, char *ret_path)
+get_includeserver_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, INCLUDEDIRSERVER, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, INCLUDEDIRSERVER, PGBINDIR, exec_path);
 }
 
 /*
  *	get_lib_path
  */
 void
-get_lib_path(const char *my_exec_path, char *ret_path)
+get_lib_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, LIBDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, LIBDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_pkglib_path
  */
 void
-get_pkglib_path(const char *my_exec_path, char *ret_path)
+get_pkglib_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, PKGLIBDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, PKGLIBDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_locale_path
  */
 void
-get_locale_path(const char *my_exec_path, char *ret_path)
+get_locale_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, LOCALEDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, LOCALEDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_doc_path
  */
 void
-get_doc_path(const char *my_exec_path, char *ret_path)
+get_doc_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, DOCDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, DOCDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_html_path
  */
 void
-get_html_path(const char *my_exec_path, char *ret_path)
+get_html_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, HTMLDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, HTMLDIR, PGBINDIR, exec_path);
 }
 
 /*
  *	get_man_path
  */
 void
-get_man_path(const char *my_exec_path, char *ret_path)
+get_man_path(const char *exec_path, char *ret_path)
 {
-	make_relative_path(ret_path, MANDIR, PGBINDIR, my_exec_path);
+	make_relative_path(ret_path, MANDIR, PGBINDIR, exec_path);
 }
 
 

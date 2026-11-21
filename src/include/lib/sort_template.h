@@ -367,7 +367,8 @@ loop:
 	pn = a + n * ST_POINTER_STEP;
 	d1 = Min(pa - a, pb - pa);
 	DO_SWAPN(a, pb - d1, d1);
-	d1 = Min(pd - pc, pn - pd - ST_POINTER_STEP);
+	d1 = Min((size_t) (pd - pc),
+			 (size_t) (pn - pd - (ptrdiff_t) ST_POINTER_STEP));
 	DO_SWAPN(pb, pn - d1, d1);
 	d1 = pb - pa;
 	d2 = pd - pc;

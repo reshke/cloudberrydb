@@ -1132,6 +1132,47 @@ fmtchar(int value, int leftjust, int minlen, PrintfTarget *target)
 	trailing_pad(padlen, target);
 }
 
+static int
+snprintf_float(char *str, size_t size, char type, int precision,
+			   double value, bool pointflag)
+{
+	if (pointflag)
+	{
+		switch (type)
+		{
+			case 'e':
+				return snprintf(str, size, "%.*e", precision, value);
+			case 'E':
+				return snprintf(str, size, "%.*E", precision, value);
+			case 'f':
+				return snprintf(str, size, "%.*f", precision, value);
+			case 'g':
+				return snprintf(str, size, "%.*g", precision, value);
+			case 'G':
+				return snprintf(str, size, "%.*G", precision, value);
+		}
+	}
+	else
+	{
+		switch (type)
+		{
+			case 'e':
+				return snprintf(str, size, "%e", value);
+			case 'E':
+				return snprintf(str, size, "%E", value);
+			case 'f':
+				return snprintf(str, size, "%f", value);
+			case 'g':
+				return snprintf(str, size, "%g", value);
+			case 'G':
+				return snprintf(str, size, "%G", value);
+		}
+	}
+
+	/* The parser only passes the floating-point conversion types above. */
+	return -1;
+}
+
 static void
 fmtfloat(double value, char type, int forcesign, int leftjust,
 		 int minlen, int zpad, int precision, int pointflag,
@@ -1140,7 +1181,6 @@ fmtfloat(double value, char type, int forcesign, int leftjust,
 	int			signvalue = 0;
 	int			prec;
 	int			vallen;
-	char		fmt[8];
 	char		convert[1024];
 	int			zeropadlen = 0; /* amount to pad with zeroes */
 	int			padlen;			/* amount to pad with spaces */
@@ -1197,19 +1237,13 @@ fmtfloat(double value, char type, int forcesign, int leftjust,
 		else if (pointflag)
 		{
 			zeropadlen = precision - prec;
-			fmt[0] = '%';
-			fmt[1] = '.';
-			fmt[2] = '*';
-			fmt[3] = type;
-			fmt[4] = '\0';
-			vallen = snprintf(convert, sizeof(convert), fmt, prec, value);
+			vallen = snprintf_float(convert, sizeof(convert), type, prec,
+								value, true);
 		}
 		else
 		{
-			fmt[0] = '%';
-			fmt[1] = type;
-			fmt[2] = '\0';
-			vallen = snprintf(convert, sizeof(convert), fmt, value);
+			vallen = snprintf_float(convert, sizeof(convert), type, 0,
+								value, false);
 		}
 		if (vallen < 0)
 			goto fail;
@@ -1284,7 +1318,6 @@ pg_strfromd(char *str, size_t count, int precision, double value)
 	PrintfTarget target;
 	int			signvalue = 0;
 	int			vallen;
-	char		fmt[8];
 	char		convert[64];
 
 	/* Set up the target like pg_snprintf, but require nonempty buffer */
@@ -1333,12 +1366,8 @@ pg_strfromd(char *str, size_t count, int precision, double value)
 		}
 		else
 		{
-			fmt[0] = '%';
-			fmt[1] = '.';
-			fmt[2] = '*';
-			fmt[3] = 'g';
-			fmt[4] = '\0';
-			vallen = snprintf(convert, sizeof(convert), fmt, precision, value);
+			vallen = snprintf_float(convert, sizeof(convert), 'g', precision,
+								value, true);
 			if (vallen < 0)
 			{
 				target.failed = true;
