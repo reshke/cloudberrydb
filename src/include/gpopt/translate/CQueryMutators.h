@@ -138,7 +138,7 @@ class CQueryMutators
 
 public:
 	// fall back during since the target list refers to a attribute which algebrizer at this point cannot resolve
-	static BOOL ShouldFallback(Node *node, SContextTLWalker *context);
+	static BOOL ShouldFallback(Node *node, void *context);
 
 	// check if the project list contains expressions on aggregates thereby needing normalization
 	static BOOL NeedsProjListNormalization(const Query *query);
@@ -156,8 +156,7 @@ public:
 										  const Query *original_query);
 
 	// traverse the project list to extract all window functions in an arbitrarily complex project element
-	static Node *RunWindowProjListMutator(Node *node,
-										  SContextGrpbyPlMutator *context);
+	static Node *RunWindowProjListMutator(Node *node, void *context);
 
 	// flatten expressions in project list
 	static Query *NormalizeGroupByProjList(CMemoryPool *mp,
@@ -183,16 +182,13 @@ public:
 								  const Query *query);
 
 	// traverse the expression and fix the levels up of any outer reference
-	static Node *RunIncrLevelsUpMutator(Node *node,
-										SContextIncLevelsupMutator *context);
+	static Node *RunIncrLevelsUpMutator(Node *node, void *context);
 
 	// traverse the expression and fix the levels up of any CTE
-	static BOOL RunFixCTELevelsUpWalker(Node *node,
-										SContextIncLevelsupMutator *context);
+	static BOOL RunFixCTELevelsUpWalker(Node *node, void *context);
 
 	// mutate the grouping columns, fix levels up when necessary
-	static Node *RunGroupingColMutator(Node *node,
-									   SContextGrpbyPlMutator *context);
+	static Node *RunGroupingColMutator(Node *node, void *context);
 
 	// fix the level up of grouping columns when necessary
 	static Node *FixGroupingCols(Node *node, TargetEntry *original,
@@ -205,8 +201,7 @@ public:
 
 	// traverse the having qual to extract all aggregate functions,
 	// fix correlated vars and return the modified having qual
-	static Node *RunExtractAggregatesMutator(Node *node,
-											 SContextGrpbyPlMutator *context);
+	static Node *RunExtractAggregatesMutator(Node *node, void *context);
 
 	// for a given an TE in the derived table, create a new TE to be added to the top level query
 	static TargetEntry *MakeTopLevelTargetEntry(TargetEntry *target_entry,

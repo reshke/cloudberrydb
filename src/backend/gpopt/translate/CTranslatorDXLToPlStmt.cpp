@@ -39,7 +39,6 @@ extern "C" {
 }
 
 #include <algorithm>
-#include <limits>  // std::numeric_limits
 #include <numeric>
 #include <tuple>
 
@@ -827,8 +826,11 @@ CTranslatorDXLToPlStmt::TranslateDXLParallelTblScan(
 //---------------------------------------------------------------------------
 BOOL
 CTranslatorDXLToPlStmt::SetIndexVarAttnoWalker(
-	Node *node, SContextIndexVarAttno *ctxt_index_var_attno_walker)
+	Node *node, void *context)
 {
+	SContextIndexVarAttno *ctxt_index_var_attno_walker =
+		static_cast<SContextIndexVarAttno *>(context);
+
 	if (nullptr == node)
 	{
 		return false;
@@ -862,7 +864,7 @@ CTranslatorDXLToPlStmt::SetIndexVarAttnoWalker(
 	}
 
 	return gpdb::WalkExpressionTree(
-		node, (BOOL(*)(Node *, void *)) CTranslatorDXLToPlStmt::SetIndexVarAttnoWalker,
+		node, CTranslatorDXLToPlStmt::SetIndexVarAttnoWalker,
 		ctxt_index_var_attno_walker);
 }
 
@@ -5921,7 +5923,6 @@ CTranslatorDXLToPlStmt::ProcessDXLTblDescr(
 	}
 
 	ULONG acl_mode = table_descr->GetAclMode();
-	GPOS_ASSERT(acl_mode <= std::numeric_limits<AclMode>::max());
 	AclMode required_perms = static_cast<AclMode>(acl_mode);
 
 	// descriptor was already processed, and translated RTE is stored at
@@ -6514,7 +6515,7 @@ CTranslatorDXLToPlStmt::FetchSecurityQuals(
 	{
 		return gpdb::WalkQueryTree(
 			parsetree,
-			(bool (*)(Node *, void *)) CTranslatorDXLToPlStmt::FetchSecurityQualsWalker,
+			CTranslatorDXLToPlStmt::FetchSecurityQualsWalker,
 			ctxt_security_quals, QTW_IGNORE_RC_SUBQUERIES);
 	}
 
@@ -6531,9 +6532,11 @@ CTranslatorDXLToPlStmt::FetchSecurityQuals(
 //
 //---------------------------------------------------------------------------
 BOOL
-CTranslatorDXLToPlStmt::FetchSecurityQualsWalker(
-	Node *node, SContextSecurityQuals *ctxt_security_quals)
+CTranslatorDXLToPlStmt::FetchSecurityQualsWalker(Node *node, void *context)
 {
+	SContextSecurityQuals *ctxt_security_quals =
+		static_cast<SContextSecurityQuals *>(context);
+
 	if (nullptr == node)
 	{
 		return false;
@@ -6556,7 +6559,7 @@ CTranslatorDXLToPlStmt::FetchSecurityQualsWalker(
 	}
 
 	return gpdb::WalkExpressionTree(
-		node, (bool (*)(Node *, void *)) CTranslatorDXLToPlStmt::FetchSecurityQualsWalker,
+		node, CTranslatorDXLToPlStmt::FetchSecurityQualsWalker,
 		ctxt_security_quals);
 }
 
@@ -6575,8 +6578,10 @@ CTranslatorDXLToPlStmt::FetchSecurityQualsWalker(
 //
 //---------------------------------------------------------------------------
 BOOL
-CTranslatorDXLToPlStmt::SetSecurityQualsVarnoWalker(Node *node, Index *index)
+CTranslatorDXLToPlStmt::SetSecurityQualsVarnoWalker(Node *node, void *context)
 {
+	Index *index = static_cast<Index *>(context);
+
 	if (nullptr == node)
 	{
 		return false;
@@ -6589,7 +6594,7 @@ CTranslatorDXLToPlStmt::SetSecurityQualsVarnoWalker(Node *node, Index *index)
 	}
 
 	return gpdb::WalkExpressionTree(
-		node, (bool (*)(Node *, void *)) CTranslatorDXLToPlStmt::SetSecurityQualsVarnoWalker,
+		node, CTranslatorDXLToPlStmt::SetSecurityQualsVarnoWalker,
 		index);
 }
 

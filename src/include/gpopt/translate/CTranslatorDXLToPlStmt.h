@@ -151,19 +151,17 @@ private:
 	CTranslatorDXLToPlStmt(const CTranslatorDXLToPlStmt &);
 
 	// walker to set index var attno's
-	static BOOL SetIndexVarAttnoWalker(
-		Node *node, SContextIndexVarAttno *ctxt_index_var_attno_walker);
+	static BOOL SetIndexVarAttnoWalker(Node *node, void *context);
 
 	// walker to set inner var to outer
 	static BOOL SetHashKeysVarnoWalker(Node *node, void *context);
 
-	static BOOL FetchSecurityQualsWalker(
-		Node *node, SContextSecurityQuals *ctxt_security_quals);
+	static BOOL FetchSecurityQualsWalker(Node *node, void *context);
 
 	static BOOL FetchSecurityQuals(Query *parsetree,
 								   SContextSecurityQuals *ctxt_security_quals);
 
-	static BOOL SetSecurityQualsVarnoWalker(Node *node, Index *index);
+	static BOOL SetSecurityQualsVarnoWalker(Node *node, void *context);
 
 public:
 	// ctor

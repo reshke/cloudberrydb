@@ -92,8 +92,10 @@ CQueryMutators::NeedsProjListNormalization(const Query *query)
 //		at this point cannot resolve
 //---------------------------------------------------------------------------
 BOOL
-CQueryMutators::ShouldFallback(Node *node, SContextTLWalker *context)
+CQueryMutators::ShouldFallback(Node *node, void *opaque_context)
 {
+	SContextTLWalker *context = static_cast<SContextTLWalker *>(opaque_context);
+
 	if (nullptr == node)
 	{
 		return false;
@@ -138,8 +140,7 @@ CQueryMutators::ShouldFallback(Node *node, SContextTLWalker *context)
 		return false;
 	}
 
-	return gpdb::WalkExpressionTree(
-		node, (ExprWalkerFn) CQueryMutators::ShouldFallback, context);
+	return gpdb::WalkExpressionTree(node, CQueryMutators::ShouldFallback, context);
 }
 
 
@@ -236,8 +237,11 @@ CQueryMutators::NormalizeGroupByProjList(CMemoryPool *mp,
 //---------------------------------------------------------------------------
 Node *
 CQueryMutators::RunIncrLevelsUpMutator(Node *node,
-									   SContextIncLevelsupMutator *context)
+									   void *opaque_context)
 {
+	SContextIncLevelsupMutator *context =
+		static_cast<SContextIncLevelsupMutator *>(opaque_context);
+
 	if (nullptr == node)
 	{
 		return nullptr;
@@ -279,7 +283,7 @@ CQueryMutators::RunIncrLevelsUpMutator(Node *node,
 		context->m_current_query_level++;
 		Query *query = gpdb::MutateQueryTree(
 			(Query *) node,
-			(MutatorWalkerFn) CQueryMutators::RunIncrLevelsUpMutator, context,
+			CQueryMutators::RunIncrLevelsUpMutator, context,
 			0  // flags
 		);
 		context->m_current_query_level--;
@@ -288,8 +292,7 @@ CQueryMutators::RunIncrLevelsUpMutator(Node *node,
 	}
 
 	return gpdb::MutateExpressionTree(
-		node, (MutatorWalkerFn) CQueryMutators::RunIncrLevelsUpMutator,
-		context);
+		node, CQueryMutators::RunIncrLevelsUpMutator, context);
 }
 
 
@@ -301,8 +304,11 @@ CQueryMutators::RunIncrLevelsUpMutator(Node *node,
 //---------------------------------------------------------------------------
 BOOL
 CQueryMutators::RunFixCTELevelsUpWalker(Node *node,
-										SContextIncLevelsupMutator *context)
+										void *opaque_context)
 {
+	SContextIncLevelsupMutator *context =
+		static_cast<SContextIncLevelsupMutator *>(opaque_context);
+
 	if (nullptr == node)
 	{
 		return false;
@@ -329,7 +335,7 @@ CQueryMutators::RunFixCTELevelsUpWalker(Node *node,
 		context->m_current_query_level++;
 		BOOL result = gpdb::WalkQueryTree(
 			(Query *) node,
-			(ExprWalkerFn) CQueryMutators::RunFixCTELevelsUpWalker, context,
+			CQueryMutators::RunFixCTELevelsUpWalker, context,
 			QTW_EXAMINE_RTES_BEFORE	 // flags - visit RTEs
 		);
 		context->m_current_query_level--;
@@ -346,7 +352,7 @@ CQueryMutators::RunFixCTELevelsUpWalker(Node *node,
 	}
 
 	return gpdb::WalkExpressionTree(
-		node, (ExprWalkerFn) CQueryMutators::RunFixCTELevelsUpWalker, context);
+		node, CQueryMutators::RunFixCTELevelsUpWalker, context);
 }
 
 //---------------------------------------------------------------------------
@@ -359,8 +365,11 @@ CQueryMutators::RunFixCTELevelsUpWalker(Node *node,
 //---------------------------------------------------------------------------
 Node *
 CQueryMutators::RunGroupingColMutator(Node *node,
-									  SContextGrpbyPlMutator *context)
+									  void *opaque_context)
 {
+	SContextGrpbyPlMutator *context =
+		static_cast<SContextGrpbyPlMutator *>(opaque_context);
+
 	if (nullptr == node)
 	{
 		return nullptr;
@@ -405,7 +414,7 @@ CQueryMutators::RunGroupingColMutator(Node *node,
 				new_args,
 				gpdb::MutateQueryOrExpressionTree(
 					arg,
-					(MutatorWalkerFn) CQueryMutators::RunGroupingColMutator,
+					CQueryMutators::RunGroupingColMutator,
 					(void *) context,
 					0  // flags -- mutate into cte-lists
 					));
@@ -437,7 +446,7 @@ CQueryMutators::RunGroupingColMutator(Node *node,
 
 		new_sublink->testexpr = gpdb::MutateQueryOrExpressionTree(
 			old_sublink->testexpr,
-			(MutatorWalkerFn) CQueryMutators::RunGroupingColMutator,
+			CQueryMutators::RunGroupingColMutator,
 			(void *) context,
 			0  // flags -- mutate into cte-lists
 		);
@@ -466,7 +475,7 @@ CQueryMutators::RunGroupingColMutator(Node *node,
 
 		cte->ctequery = gpdb::MutateQueryOrExpressionTree(
 			cte->ctequery,
-			(MutatorWalkerFn) CQueryMutators::RunGroupingColMutator,
+			CQueryMutators::RunGroupingColMutator,
 			(void *) context,
 			0  // flags --- mutate into cte-lists
 		);
@@ -480,7 +489,7 @@ CQueryMutators::RunGroupingColMutator(Node *node,
 	{
 		Query *query = gpdb::MutateQueryTree(
 			(Query *) node,
-			(MutatorWalkerFn) CQueryMutators::RunGroupingColMutator, context,
+			CQueryMutators::RunGroupingColMutator, context,
 			1  // flag -- do not mutate range table entries
 		);
 
@@ -507,7 +516,7 @@ CQueryMutators::RunGroupingColMutator(Node *node,
 	}
 
 	return gpdb::MutateExpressionTree(
-		node, (MutatorWalkerFn) CQueryMutators::RunGroupingColMutator, context);
+		node, CQueryMutators::RunGroupingColMutator, context);
 }
 
 
@@ -602,8 +611,11 @@ CQueryMutators::GetTargetEntryForAggExpr(CMemoryPool *mp,
 // See comments below & in the callers for specific use cases.
 Node *
 CQueryMutators::RunExtractAggregatesMutator(Node *node,
-											SContextGrpbyPlMutator *context)
+											void *opaque_context)
 {
+	SContextGrpbyPlMutator *context =
+		static_cast<SContextGrpbyPlMutator *>(opaque_context);
+
 	if (nullptr == node)
 	{
 		return nullptr;
@@ -643,7 +655,7 @@ CQueryMutators::RunExtractAggregatesMutator(Node *node,
 				new_args = gpdb::LAppend(
 					new_args,
 					gpdb::MutateQueryOrExpressionTree(
-						arg, (MutatorWalkerFn) RunExtractAggregatesMutator,
+						arg, RunExtractAggregatesMutator,
 						(void *) context,
 						0  // mutate into cte-lists
 						));
@@ -793,7 +805,7 @@ CQueryMutators::RunExtractAggregatesMutator(Node *node,
 		GPOS_ASSERT(IsA(cte->ctequery, Query));
 
 		cte->ctequery = gpdb::MutateQueryOrExpressionTree(
-			cte->ctequery, (MutatorWalkerFn) RunExtractAggregatesMutator,
+			cte->ctequery, RunExtractAggregatesMutator,
 			(void *) context,
 			0  // mutate into cte-lists
 		);
@@ -814,7 +826,7 @@ CQueryMutators::RunExtractAggregatesMutator(Node *node,
 
 		new_sublink->testexpr = gpdb::MutateQueryOrExpressionTree(
 			old_sublink->testexpr,
-			(MutatorWalkerFn) RunExtractAggregatesMutator, (void *) context,
+			RunExtractAggregatesMutator, (void *) context,
 			0  // mutate into cte-lists
 		);
 		context->m_current_query_level++;
@@ -838,7 +850,7 @@ CQueryMutators::RunExtractAggregatesMutator(Node *node,
 		// Mutate Query tree and ignore rtable subqueries in order to modify
 		// m_current_query_level properly when mutating them below.
 		Query *query = gpdb::MutateQueryTree(
-			(Query *) node, (MutatorWalkerFn) RunExtractAggregatesMutator,
+			(Query *) node, RunExtractAggregatesMutator,
 			context, QTW_IGNORE_RT_SUBQUERIES);
 
 		ListCell *lc;
@@ -861,7 +873,7 @@ CQueryMutators::RunExtractAggregatesMutator(Node *node,
 	}
 
 	return gpdb::MutateExpressionTree(
-		node, (MutatorWalkerFn) RunExtractAggregatesMutator, context);
+		node, RunExtractAggregatesMutator, context);
 }
 
 
@@ -1235,7 +1247,7 @@ CQueryMutators::ConvertToDerivedTable(const Query *original_query,
 		SContextIncLevelsupMutator context1(0, should_fix_target_list);
 
 		lower_query = gpdb::MutateQueryTree(
-			query_copy, (MutatorWalkerFn) RunIncrLevelsUpMutator, &context1,
+			query_copy, RunIncrLevelsUpMutator, &context1,
 			0  // flags
 		);
 	}
@@ -1249,7 +1261,7 @@ CQueryMutators::ConvertToDerivedTable(const Query *original_query,
 											should_fix_target_list);
 
 		(void) gpdb::WalkQueryOrExpressionTree(
-			(Node *) lower_query, (ExprWalkerFn) RunFixCTELevelsUpWalker,
+			(Node *) lower_query, RunFixCTELevelsUpWalker,
 			&context2, QTW_EXAMINE_RTES_BEFORE);
 	}
 
@@ -1503,7 +1515,7 @@ CQueryMutators::NormalizeWindowProjList(CMemoryPool *mp,
 			TargetEntry *lower_target_entry =
 				(TargetEntry *) gpdb::MutateExpressionTree(
 					(Node *) target_entry,
-					(MutatorWalkerFn) RunIncrLevelsUpMutator, &level_context);
+					RunIncrLevelsUpMutator, &level_context);
 
 			lower_target_entry->resno =
 				gpdb::ListLength(projlist_context.m_lower_table_tlist) + 1;
@@ -1548,8 +1560,8 @@ CQueryMutators::NormalizeWindowProjList(CMemoryPool *mp,
 			target_entry->resno = ulResNoNew;
 			TargetEntry *upper_target_entry =
 				(TargetEntry *) gpdb::MutateExpressionTree(
-					(Node *) target_entry,
-					(MutatorWalkerFn) RunWindowProjListMutator,
+				(Node *) target_entry,
+					RunWindowProjListMutator,
 					&projlist_context);
 			upper_query->targetList =
 				gpdb::LAppend(upper_query->targetList, upper_target_entry);
@@ -1577,8 +1589,11 @@ CQueryMutators::NormalizeWindowProjList(CMemoryPool *mp,
 //---------------------------------------------------------------------------
 Node *
 CQueryMutators::RunWindowProjListMutator(Node *node,
-										 SContextGrpbyPlMutator *context)
+											 void *opaque_context)
 {
+	SContextGrpbyPlMutator *context =
+		static_cast<SContextGrpbyPlMutator *>(opaque_context);
+
 	if (nullptr == node)
 	{
 		return nullptr;
@@ -1600,7 +1615,7 @@ CQueryMutators::RunWindowProjListMutator(Node *node,
 			context->m_current_query_level,
 			true /* should_fix_top_level_target_list */);
 		WindowFunc *window_func = (WindowFunc *) gpdb::MutateExpressionTree(
-			node, (MutatorWalkerFn) RunIncrLevelsUpMutator, &levelsUpContext);
+			node, RunIncrLevelsUpMutator, &levelsUpContext);
 		GPOS_ASSERT(IsA(window_func, WindowFunc));
 
 		// get the function name and create a new target entry for window_func
@@ -1666,7 +1681,7 @@ CQueryMutators::RunWindowProjListMutator(Node *node,
 		// recurse into Query nodes
 		context->m_current_query_level++;
 		Query *result = gpdb::MutateQueryTree(
-			(Query *) node, (MutatorWalkerFn) RunWindowProjListMutator, context,
+			(Query *) node, RunWindowProjListMutator, context,
 			0);
 		context->m_current_query_level--;
 
@@ -1674,7 +1689,7 @@ CQueryMutators::RunWindowProjListMutator(Node *node,
 	}
 
 	return gpdb::MutateExpressionTree(
-		node, (MutatorWalkerFn) CQueryMutators::RunWindowProjListMutator,
+		node, CQueryMutators::RunWindowProjListMutator,
 		context);
 }
 
