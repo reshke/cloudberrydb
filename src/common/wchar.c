@@ -104,7 +104,7 @@ pg_ascii2wchar_with_len(const unsigned char *from, pg_wchar *to, int len)
 }
 
 static int
-pg_ascii_mblen(const unsigned char *s)
+pg_ascii_mblen(const unsigned char *s pg_attribute_unused())
 {
 	return 1;
 }
@@ -975,7 +975,7 @@ pg_wchar2single_with_len(const pg_wchar *from, unsigned char *to, int len)
 }
 
 static int
-pg_latin1_mblen(const unsigned char *s)
+pg_latin1_mblen(const unsigned char *s pg_attribute_unused())
 {
 	return 1;
 }
@@ -1162,7 +1162,8 @@ pg_gb18030_dsplen(const unsigned char *s)
  *-------------------------------------------------------------------
  */
 static int
-pg_ascii_verifychar(const unsigned char *s, int len)
+pg_ascii_verifychar(const unsigned char *s pg_attribute_unused(),
+					int len pg_attribute_unused())
 {
 	return 1;
 }
@@ -1509,7 +1510,8 @@ pg_mule_verifystr(const unsigned char *s, int len)
 }
 
 static int
-pg_latin1_verifychar(const unsigned char *s, int len)
+pg_latin1_verifychar(const unsigned char *s pg_attribute_unused(),
+					 int len pg_attribute_unused())
 {
 	return 1;
 }
@@ -2001,7 +2003,7 @@ pg_utf8_verifystr(const unsigned char *s, int len)
  * the compiler can unroll a longer loop, it's not worth it because we
  * must fall back to the byte-wise algorithm if we find any non-ASCII.
  */
-#define STRIDE_LENGTH (2 * sizeof(Vector8))
+#define STRIDE_LENGTH (2 * (int) sizeof(Vector8))
 
 	if (len >= STRIDE_LENGTH)
 	{

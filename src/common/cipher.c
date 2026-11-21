@@ -26,58 +26,77 @@ static void cipher_failure(void) pg_attribute_noreturn();
 
 
 PgCipherCtx *
-pg_cipher_ctx_create(int cipher, unsigned char *key, int klen, bool enc)
+pg_cipher_ctx_create(int cipher pg_attribute_unused(),
+					 unsigned char *key pg_attribute_unused(),
+					 int klen pg_attribute_unused(),
+					 bool enc pg_attribute_unused())
 {
 	cipher_failure();
 	return NULL;				/* keep compiler quiet */
 }
 
 void
-pg_cipher_ctx_free(PgCipherCtx *ctx)
+pg_cipher_ctx_free(PgCipherCtx *ctx pg_attribute_unused())
 {
 	cipher_failure();
 }
 
 int
-pg_cipher_blocksize(PgCipherCtx *ctx)
+pg_cipher_blocksize(PgCipherCtx *ctx pg_attribute_unused())
 {
 	cipher_failure();
 	return -1;					/* keep compiler quiet */
 }
 
 bool
-pg_cipher_encrypt(PgCipherCtx *ctx, const int cipher,
-				  const unsigned char *plaintext,
-				  const int inlen, unsigned char *ciphertext, int *outlen,
-				  const unsigned char *iv, const int ivlen,
-				  unsigned char *outtag, const int taglen)
+pg_cipher_encrypt(PgCipherCtx *ctx pg_attribute_unused(),
+				  const int cipher pg_attribute_unused(),
+				  const unsigned char *plaintext pg_attribute_unused(),
+				  const int inlen pg_attribute_unused(),
+				  unsigned char *ciphertext pg_attribute_unused(),
+				  int *outlen pg_attribute_unused(),
+				  const unsigned char *iv pg_attribute_unused(),
+				  const int ivlen pg_attribute_unused(),
+				  unsigned char *outtag pg_attribute_unused(),
+				  const int taglen pg_attribute_unused())
 {
 	cipher_failure();
 	return false;				/* keep compiler quiet */
 }
 
 bool
-pg_cipher_decrypt(PgCipherCtx *ctx, const int cipher,
-				  const unsigned char *ciphertext,
-				  const int inlen, unsigned char *plaintext, int *outlen,
-				  const unsigned char *iv, const int ivlen,
-				  unsigned char *intag, const int taglen)
+pg_cipher_decrypt(PgCipherCtx *ctx pg_attribute_unused(),
+				  const int cipher pg_attribute_unused(),
+				  const unsigned char *ciphertext pg_attribute_unused(),
+				  const int inlen pg_attribute_unused(),
+				  unsigned char *plaintext pg_attribute_unused(),
+				  int *outlen pg_attribute_unused(),
+				  const unsigned char *iv pg_attribute_unused(),
+				  const int ivlen pg_attribute_unused(),
+				  unsigned char *intag pg_attribute_unused(),
+				  const int taglen pg_attribute_unused())
 {
 	cipher_failure();
 	return false;				/* keep compiler quiet */
 }
 
 bool
-pg_cipher_keywrap(PgCipherCtx *ctx, const unsigned char *plaintext,
-				  const int inlen, unsigned char *ciphertext, int *outlen)
+pg_cipher_keywrap(PgCipherCtx *ctx pg_attribute_unused(),
+				  const unsigned char *plaintext pg_attribute_unused(),
+				  const int inlen pg_attribute_unused(),
+				  unsigned char *ciphertext pg_attribute_unused(),
+				  int *outlen pg_attribute_unused())
 {
 	cipher_failure();
 	return false;				/* keep compiler quiet */
 }
 
 bool
-pg_cipher_keyunwrap(PgCipherCtx *ctx, const unsigned char *ciphertext,
-					const int inlen, unsigned char *plaintext, int *outlen)
+pg_cipher_keyunwrap(PgCipherCtx *ctx pg_attribute_unused(),
+					const unsigned char *ciphertext pg_attribute_unused(),
+					const int inlen pg_attribute_unused(),
+					unsigned char *plaintext pg_attribute_unused(),
+					int *outlen pg_attribute_unused())
 {
 	cipher_failure();
 	return false;				/* keep compiler quiet */
