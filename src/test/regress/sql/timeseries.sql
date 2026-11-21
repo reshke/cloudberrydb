@@ -170,6 +170,7 @@ from ( values
 
 -- Test limits
 select linear_interpolate(3, 0, 0::bigint, 1, (2^62)::bigint);
+select linear_interpolate(2, 0, 0::bigint, 1, (2^62)::bigint);
 select linear_interpolate(3, 0, 0::bigint, 1, (-2^62)::bigint);
 select linear_interpolate(3, 0, 0::integer, 1, (2^30)::integer);
 select linear_interpolate(3, 0, 0::integer, 1, (-2^30)::integer);

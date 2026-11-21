@@ -352,6 +352,8 @@ from ( values
 -- Test limits
 select linear_interpolate(3, 0, 0::bigint, 1, (2^62)::bigint);
 ERROR:  value "13835058055282163712.000000" is out of range for type bigint
+select linear_interpolate(2, 0, 0::bigint, 1, (2^62)::bigint);
+ERROR:  value "9223372036854775808.000000" is out of range for type bigint
 select linear_interpolate(3, 0, 0::bigint, 1, (-2^62)::bigint);
 ERROR:  value "13835058055282163712.000000" is out of range for type bigint
 select linear_interpolate(3, 0, 0::integer, 1, (2^30)::integer);
