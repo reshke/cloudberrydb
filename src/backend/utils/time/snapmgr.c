@@ -2369,17 +2369,37 @@ void
 SerializeSnapshot(Snapshot snapshot, char *start_address)
 {
 	SerializedSnapshotData serialized_snapshot;
-	Size subxipoff = sizeof(SerializedSnapshotData) + snapshot->xcnt * sizeof(TransactionId);
-	Size dsoff = subxipoff + snapshot->subxcnt * sizeof(TransactionId);
-	Size dslmoff = dsoff + snapshot->distribSnapshotWithLocalMapping.ds.count * sizeof(DistributedTransactionId);
+	int32		serialized_subxcnt = snapshot->subxcnt;
+	Size		subxipoff;
+	Size		dsoff;
+	Size		dslmoff;
 
 	Assert(snapshot->subxcnt >= 0);
+
+	/*
+	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
+	 * taken during recovery - in that case, top-level XIDs are in subxip as
+	 * well, and we mustn't lose them.  Use the serialized count for offsets too,
+	 * since EstimateSnapshotSpace() doesn't reserve space for an overflowed
+	 * array in a normal snapshot.
+	 */
+	if (snapshot->suboverflowed && !snapshot->takenDuringRecovery)
+		serialized_subxcnt = 0;
+
+	subxipoff = sizeof(SerializedSnapshotData) +
+		snapshot->xcnt * sizeof(TransactionId);
+	dsoff = subxipoff + serialized_subxcnt * sizeof(TransactionId);
+	dslmoff = dsoff;
+	if (snapshot->haveDistribSnapshot &&
+		snapshot->distribSnapshotWithLocalMapping.ds.count > 0)
+		dslmoff += snapshot->distribSnapshotWithLocalMapping.ds.count *
+			sizeof(DistributedTransactionId);
 
 	/* Copy all required fields */
 	serialized_snapshot.xmin = snapshot->xmin;
 	serialized_snapshot.xmax = snapshot->xmax;
 	serialized_snapshot.xcnt = snapshot->xcnt;
-	serialized_snapshot.subxcnt = snapshot->subxcnt;
+	serialized_snapshot.subxcnt = serialized_subxcnt;
 	serialized_snapshot.suboverflowed = snapshot->suboverflowed;
 	serialized_snapshot.takenDuringRecovery = snapshot->takenDuringRecovery;
 	serialized_snapshot.curcid = snapshot->curcid;
@@ -2398,14 +2418,6 @@ SerializeSnapshot(Snapshot snapshot, char *start_address)
 	serialized_snapshot.ds_xmin = snapshot->distribSnapshotWithLocalMapping.ds.xmin;
 	serialized_snapshot.ds_xmax = snapshot->distribSnapshotWithLocalMapping.ds.xmax;
 	serialized_snapshot.ds_count = snapshot->distribSnapshotWithLocalMapping.ds.count;
-
-	/*
-	 * Ignore the SubXID array if it has overflowed, unless the snapshot was
-	 * taken during recovery - in that case, top-level XIDs are in subxip as
-	 * well, and we mustn't lose them.
-	 */
-	if (serialized_snapshot.suboverflowed && !snapshot->takenDuringRecovery)
-		serialized_snapshot.subxcnt = 0;
 
 	/* Copy struct to possibly-unaligned buffer */
 	memcpy(start_address,

@@ -8,6 +8,7 @@
 #include "utils/resowner.h"
 #include "utils/faultinjector.h"
 #include "utils/snapshot.h"
+#include "utils/snapmgr.h"
 #include "storage/fd.h"
 
 #include "../sharedsnapshot.c"
@@ -65,13 +66,72 @@ test_boundaries_of_CreateSharedSnapshotArray(void **state)
 	}
 }
 
+static void
+test_serialize_overflowed_snapshot_with_distributed_xids(void **state)
+{
+	SnapshotData original;
+	TransactionId xip[] = {42};
+	TransactionId subxip[] = {43};
+	DistributedTransactionId dsxip[] = {UINT64CONST(0x123456789abcdef0)};
+	TransactionId mappedLocalXids[] = {44};
+	Size		snapshotSize;
+	char	   *serialized;
+	Snapshot	restored;
+
+	MemSet(&original, 0, sizeof(original));
+	original.snapshot_type = SNAPSHOT_MVCC;
+	original.xmin = 40;
+	original.xmax = 50;
+	original.xip = xip;
+	original.xcnt = lengthof(xip);
+	original.subxip = subxip;
+	original.subxcnt = lengthof(subxip);
+	original.suboverflowed = true;
+	original.haveDistribSnapshot = true;
+	original.distribSnapshotWithLocalMapping.ds.count = lengthof(dsxip);
+	original.distribSnapshotWithLocalMapping.ds.inProgressXidArray = dsxip;
+	original.distribSnapshotWithLocalMapping.currentLocalXidsCount =
+		lengthof(mappedLocalXids);
+	original.distribSnapshotWithLocalMapping.inProgressMappedLocalXids =
+		mappedLocalXids;
+
+	snapshotSize = EstimateSnapshotSpace(&original);
+	/*
+	 * Leave room for the old, incorrect offset so the regression test can
+	 * inspect the restored data without itself writing beyond the allocation.
+	 */
+	serialized = malloc(snapshotSize + sizeof(TransactionId));
+	assert_true(serialized != NULL);
+	memset(serialized, 0, snapshotSize + sizeof(TransactionId));
+	SerializeSnapshot(&original, serialized);
+
+	if (TopTransactionContext == NULL)
+		TopTransactionContext = AllocSetContextCreate(TopMemoryContext,
+												 "sharedsnapshot test transaction",
+												 ALLOCSET_DEFAULT_SIZES);
+	restored = RestoreSnapshot(serialized);
+	assert_int_equal(restored->subxcnt, 0);
+	assert_true(restored->suboverflowed);
+	assert_int_equal(restored->distribSnapshotWithLocalMapping.ds.count, 1);
+	assert_int_equal(restored->distribSnapshotWithLocalMapping.ds.inProgressXidArray[0],
+				  dsxip[0]);
+	assert_int_equal(restored->distribSnapshotWithLocalMapping.currentLocalXidsCount,
+				  1);
+	assert_int_equal(restored->distribSnapshotWithLocalMapping.inProgressMappedLocalXids[0],
+				  mappedLocalXids[0]);
+
+	pfree(restored);
+	free(serialized);
+}
+
 int
 main(int argc, char* argv[])
 {
 	cmockery_parse_arguments(argc, argv);
 
 	const UnitTest tests[] = {
-		unit_test(test_boundaries_of_CreateSharedSnapshotArray)
+		unit_test(test_boundaries_of_CreateSharedSnapshotArray),
+		unit_test(test_serialize_overflowed_snapshot_with_distributed_xids)
 	};
 	MemoryContextInit();
 	InitFileAccess();
