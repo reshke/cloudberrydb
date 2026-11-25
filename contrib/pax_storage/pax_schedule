@@ -22,5 +22,6 @@ test: dictionary_encoding
 
 test: cluster
 test: db_size_functions
+test: temp_reindex
 
 test: teardown
