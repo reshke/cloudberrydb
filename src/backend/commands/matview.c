@@ -3748,6 +3748,10 @@ static void
 ivm_export_snapshot(Oid matview_id, char *snapname)
 {
 	StringInfoData	querybuf;
+	Oid			save_userid;
+	int			save_sec_context;
+	int			spi_status;
+
 	/* Open SPI context. */
 	if (SPI_connect() != SPI_OK_CONNECT)
 		elog(ERROR, "SPI_connect failed");
@@ -3756,7 +3760,28 @@ ivm_export_snapshot(Oid matview_id, char *snapname)
 	appendStringInfo(&querybuf,
 			"SELECT pg_catalog.pg_export_snapshot_def(%d::pg_catalog.oid, '%s')", matview_id, snapname);
 
-	if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
+	/*
+	 * pg_export_snapshot_def is an internal helper that is not executable by
+	 * ordinary SQL users.  Run this narrowly-scoped internal call as the
+	 * bootstrap superuser so incremental view maintenance continues to work
+	 * after its PUBLIC EXECUTE privilege is revoked.
+	 */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	PG_TRY();
+	{
+		spi_status = SPI_exec(querybuf.data, 0);
+	}
+	PG_CATCH();
+	{
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	SetUserIdAndSecContext(save_userid, save_sec_context);
+
+	if (spi_status != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
 	elogif(Debug_print_ivm, INFO, "IVM ivm_export_snapshot: %s", querybuf.data);
@@ -3780,6 +3805,12 @@ pg_export_snapshot_def(PG_FUNCTION_ARGS)
 	Snapshot snapshot = GetActiveSnapshot();
 	SnapshotDumpEntry	*pDump;
 	dsm_segment *segment;
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to export snapshots for incremental materialized views")));
+
 	Assert(snapshot->snapshot_type == SNAPSHOT_MVCC);
 	Assert(snapname);
 

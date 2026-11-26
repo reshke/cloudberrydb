@@ -789,6 +789,10 @@ REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text) FROM public;
 
 REVOKE EXECUTE ON FUNCTION gp_add_master_standby(text, text, text, integer) FROM public;
 
+-- pg_export_snapshot_def is an internal IVM helper.  Its C implementation
+-- also checks for superuser so the restriction applies to existing clusters.
+REVOKE EXECUTE ON FUNCTION pg_export_snapshot_def(oid, text) FROM public;
+
 
 --
 -- We also set up some things as accessible to standard roles.
