@@ -735,6 +735,17 @@ LOG:  statement: select count(*) from t1 where coalesce(v1, 2) != 1;
 
 reset client_min_messages;
 LOG:  statement: reset client_min_messages;
+-- An optimizer may fold the inner IN to a constant for a NOT NULL column.
+create table t_in_notnull(v text not null) using pax with (minmax_columns='v') distributed by (v);
+insert into t_in_notnull values ('alpha'), ('beta');
+select v from t_in_notnull where (v in (v)) in (false, true) order by v;
+   v   
+-------
+ alpha
+ beta
+(2 rows)
+
+drop table t_in_notnull;
 drop table t1;
 drop table t2;
 drop table t_allnull;

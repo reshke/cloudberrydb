@@ -1071,7 +1071,12 @@ bool PaxSparseFilter::ExecInNode(PaxSparseExecContext *exec_ctx,
     return no_filter;
   }
 
-  Assert(lctx_copy.from_node == VarType && rctx_copy.from_node == ConstType);
+  // Optimizers can fold an IN expression over a NOT NULL column to constants.
+  // Sparse statistics cannot safely prune such a clause, so let the executor
+  // evaluate it instead.
+  if (lctx_copy.from_node != VarType || rctx_copy.from_node != ConstType) {
+    return true;
+  }
 
   column_index = lctx_copy.var_value.attrno - 1;
   attr = CheckAndGetAttr(column_index, lctx_copy.provider, lctx_copy.desc,
